@@ -2181,7 +2181,20 @@ func TestParserExpressionMathRoundValues2(t *testing.T) {
 func TestParserBunchaMathFuncs(t *testing.T) {
 	assert := assert.New(t)
 
-	strExpr := "ABS(negNum) ==  5 && SQRT(squaredNum) > 1"
+	matchJson := []byte(`
+		["equals",
+		    ["func", "mathPow",
+		        ["field", "squaredNum"],
+			    ["value", 2]
+			],
+			["value", 16]
+		]`)
+
+	jsonExpr, err := ParseJsonExpression(matchJson)
+	assert.Nil(err)
+
+	strExpr := "POWER(squaredNum,2) == 16"
+	//	strExpr := "ABS(negNum) ==  5 && SQRT(squaredNum) > 1"
 	ctx, err := NewExpressionParserCtx(strExpr)
 	assert.Nil(err)
 
@@ -2190,6 +2203,8 @@ func TestParserBunchaMathFuncs(t *testing.T) {
 
 	simpleExpr, err := ctx.outputExpression()
 	assert.Nil(err)
+
+	assert.Equal(jsonExpr.String(), simpleExpr.String())
 
 	var trans Transformer
 	matchDef := trans.Transform([]Expression{simpleExpr})
@@ -2205,4 +2220,38 @@ func TestParserBunchaMathFuncs(t *testing.T) {
 	match, err := m.Match(udMarsh)
 	assert.Nil(err)
 	assert.True(match)
+}
+
+func TestParserExpressionRecursiveFuncs(t *testing.T) {
+	assert := assert.New(t)
+
+	matchJson := []byte(`
+		["equals",
+		    ["func", "mathRound",
+	            ["func", "mathAbs",
+	                ["field", "number"]
+	            ]
+			],
+			["value", 5]
+		]`)
+
+	jsonExpr, err := ParseJsonExpression(matchJson)
+	assert.Nil(err)
+
+	strExpr := "ROUND(ABS(number)) ==  5"
+	ctx, err := NewExpressionParserCtx(strExpr)
+	assert.Nil(err)
+
+	err = ctx.parse()
+	assert.Nil(err)
+
+	simpleExpr, err := ctx.outputExpression()
+	assert.Nil(err)
+
+	var trans Transformer
+	matchDef := trans.Transform([]Expression{jsonExpr})
+	assert.NotNil(matchDef)
+
+	assert.Equal(jsonExpr.String(), simpleExpr.String())
+
 }

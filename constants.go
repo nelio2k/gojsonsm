@@ -22,6 +22,7 @@ const (
 	MathFuncSin   string = "mathSin"
 	MathFuncSqrt  string = "mathSqrt"
 	MathFuncTan   string = "mathTan"
+	MathFuncPow   string = "mathPow"
 )
 
 // Parser related constants
@@ -43,6 +44,8 @@ var ErrorEmptyLiteral error = fmt.Errorf("Literals cannot be empty")
 var ErrorEmptyToken error = fmt.Errorf("Token cannot be empty")
 var ErrorInvalidFuncArgs error = fmt.Errorf("Unable to parse arguments to specified built in function")
 var ErrorPcreNotSupported error = fmt.Errorf("Error: Current instance of gojsonsm does not have native PCRE support compiled")
+var ErrorFieldPathNotFound error = fmt.Errorf("Error: Unable to find internally stored field path")
+var ErrorMalformedFxInternals error = fmt.Errorf("Error: Malformed internal function helper")
 
 // Parse mode is within the context that a valid expression should be generically of the type of:
 // field > op -> value -> chain, repeat.
@@ -88,3 +91,8 @@ const (
 	matchOp   opTokenContext = iota
 	noFieldOp opTokenContext = iota
 )
+
+// Function helpers
+type checkAndGetKeyFunc func(string) (bool, string)
+type funcNameType string
+type funcRecursiveIdx int
