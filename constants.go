@@ -34,7 +34,6 @@ var ErrorNoMoreTokens error = fmt.Errorf("Error: No more token found")
 var ErrorNeedToStartOneNewCtx error = fmt.Errorf("Error: Need to spawn one subcontext")
 var ErrorNeedToStartNewCtx error = fmt.Errorf("Error: Need to spawn subcontext")
 var ErrorParenMismatch error = fmt.Errorf("Error: Parenthesis mismatch")
-var ErrorParenWSpace error = fmt.Errorf("Error: parenthesis must have white space before or after it")
 var NonErrorOneLayerDone error = fmt.Errorf("One layer has finished")
 var ErrorLeadingZeroes error = fmt.Errorf("Nested mode index must not have leading zeros")
 var ErrorAllInts error = fmt.Errorf("Array index must be a valid integer")
@@ -47,6 +46,7 @@ var ErrorInvalidFuncArgs error = fmt.Errorf("Unable to parse arguments to specif
 var ErrorPcreNotSupported error = fmt.Errorf("Error: Current instance of gojsonsm does not have native PCRE support compiled")
 var ErrorFieldPathNotFound error = fmt.Errorf("Error: Unable to find internally stored field path")
 var ErrorMalformedFxInternals error = fmt.Errorf("Error: Malformed internal function helper")
+var ErrorMalformedParenthesis error = fmt.Errorf("Invalid parenthesis case")
 
 // Parse mode is within the context that a valid expression should be generically of the type of:
 // field > op -> value -> chain, repeat.

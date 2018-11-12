@@ -144,6 +144,8 @@ type parserSubContext struct {
 	skipAdvanceCurrentMode bool
 	opTokenContext         opTokenContext
 
+	fieldIsTrueOrFalse bool
+
 	// For tree organization
 	lastParserDataNode  int // Last inserted parser data node location
 	lastBinTreeDataNode int // Last inserted parserTree data node location
@@ -156,6 +158,9 @@ type parserSubContext struct {
 
 	// Means that we should return as soon as the one layer of field -> op -> value is done
 	oneLayerMode bool
+
+	// Last seeker found
+	lastSeeker *opSeeker
 }
 
 func (subctx *parserSubContext) isUnused() bool {
@@ -194,6 +199,58 @@ type funcOutputHelper struct {
 
 	// Functional regex to grab function names and also its arguments
 	builtInFuncRegex map[string]*regexp.Regexp
+}
+
+type opSeeker struct {
+	completeToken string
+	idx           int
+
+	opFound bool
+	//	opFoundLastIdx int
+	opMatched string
+}
+
+func NewOpSeeker(token string) *opSeeker {
+	seeker := &opSeeker{completeToken: token}
+	return seeker
+}
+
+func (os *opSeeker) Seek() bool {
+	for i := 0; i < len(os.completeToken); i++ {
+		os.idx = i
+		os.seekInternal(i)
+		if os.opFound {
+			return true
+		}
+	}
+	return false
+}
+
+func (os *opSeeker) GetToken() string {
+	return os.opMatched
+}
+
+func (os *opSeeker) seekInternal(curIdx int) {
+	compiledStr := os.completeToken[os.idx:curIdx]
+	if tokenIsOpType(compiledStr) {
+		if !os.opFound {
+			os.opFound = true
+		}
+		if curIdx == len(os.completeToken) {
+			// The last character just happens to be the op
+			os.opMatched = compiledStr
+			return
+		}
+	} else {
+		if os.opFound {
+			os.opMatched = os.completeToken[os.idx : curIdx-1]
+			return
+		}
+	}
+
+	if curIdx < len(os.completeToken) {
+		os.seekInternal(curIdx + 1)
+	}
 }
 
 type expressionParserContext struct {
@@ -485,6 +542,7 @@ func (ctx *expressionParserContext) advanceToken() error {
 			ctx.subCtx.currentMode = chainMode
 		case chainOp:
 			ctx.subCtx.currentMode = fieldMode
+			ctx.subCtx.fieldIsTrueOrFalse = false
 		default:
 			// After the op mode, the next mode should be value mode
 			ctx.subCtx.currentMode = valueMode
@@ -503,6 +561,7 @@ func (ctx *expressionParserContext) advanceToken() error {
 		ctx.subCtx.opTokenContext.clear()
 	case chainMode:
 		ctx.subCtx.currentMode = fieldMode
+		ctx.subCtx.fieldIsTrueOrFalse = false
 	default:
 		return fmt.Errorf("Not implemented yet for mode transition %v", ctx.subCtx.currentMode)
 	}
@@ -534,6 +593,11 @@ func (ctx *expressionParserContext) handleCloseParenBookKeeping() error {
 		return ErrorParenMismatch
 	}
 	ctx.parenDepth--
+
+	// If a close parenthesis is found and there was no op in this latest () and it's not (true) or (false)
+	if ctx.subCtx.lastOpIndex == -1 && !ctx.subCtx.fieldIsTrueOrFalse && ctx.subCtx.currentMode != fieldMode {
+		return ErrorMalformedParenthesis
+	}
 	return nil
 }
 
@@ -618,9 +682,6 @@ outerLoop:
 }
 
 func (ctx *expressionParserContext) getCurrentTokenParenHelper(token string) (string, ParseTokenType, error) {
-	// For simplicity, let's not allow parenthesis without spaces
-	parenMiddleRegex := regexp.MustCompile(`[A-Za-z]+(\(|\))+[A-Za-z]+`)
-
 	if token != "(" && strings.HasPrefix(token, "(") {
 		ctx.handleParenPrefix("(")
 		return ctx.getCurrentToken()
@@ -638,11 +699,11 @@ func (ctx *expressionParserContext) getCurrentTokenParenHelper(token string) (st
 		return token, TokenTypeEndParen, ctx.handleCloseParenBookKeeping()
 	} else if token == "(" {
 		return token, TokenTypeParen, ctx.handleOpenParenBookKeeping()
-	} else if parenMiddleRegex.MatchString(token) {
-		return token, TokenTypeInvalid, ErrorParenWSpace
+	} else if found := ctx.checkPotentialSeparation(token); found {
+		return ctx.getAndSeparateToken()
 	}
 
-	return token, TokenTypeInvalid, fmt.Errorf("Invalid parenthesis case")
+	return token, TokenTypeInvalid, ErrorMalformedParenthesis
 }
 
 func (ctx *expressionParserContext) getTokenValueSubtype() ParseTokenType {
@@ -673,6 +734,19 @@ func (ctx *expressionParserContext) getValueTokenHelper(delim string) (string, P
 	return token, ctx.getTokenValueSubtype(), nil
 }
 
+// Also does some internal ctx set
+func (ctx *expressionParserContext) getTrueFalseValue(token string) (string, ParseTokenType, error) {
+	if token == "true" {
+		ctx.subCtx.fieldIsTrueOrFalse = true
+		return token, TokenTypeTrue, nil
+	} else if token == "false" {
+		ctx.subCtx.fieldIsTrueOrFalse = true
+		return token, TokenTypeFalse, nil
+	} else {
+		return token, TokenTypeInvalid, ErrorInvalidFuncArgs
+	}
+}
+
 func (ctx *expressionParserContext) getCurrentToken() (string, ParseTokenType, error) {
 	if ctx.currentTokenIndex >= len(ctx.tokens) {
 		return "", TokenTypeInvalid, ErrorNoMoreTokens
@@ -689,16 +763,16 @@ func (ctx *expressionParserContext) getCurrentToken() (string, ParseTokenType, e
 		return ctx.getValueTokenHelper(delim)
 	} else if isNum, ok := valueCheck(token).(bool); ok && isNum {
 		return token, ctx.getTokenValueSubtype(), nil
-	} else if token == "true" {
-		return token, TokenTypeTrue, nil
-	} else if token == "false" {
-		return token, TokenTypeFalse, nil
+	} else if token == "true" || token == "false" {
+		return ctx.getTrueFalseValue(token)
 	} else if isFunc, key := ctx.tokenIsBuiltInFuncType(token); isFunc {
 		return ctx.getFuncFieldTokenHelper(token, key)
 	} else if strings.Contains(token, "(") || strings.Contains(token, ")") {
 		return ctx.getCurrentTokenParenHelper(token)
 	} else if delim, unfinished := tokenIsUnfinishedValueType(token); ctx.subCtx.currentMode == valueMode && unfinished {
 		return ctx.getUnfinishedValueHelper(delim)
+	} else if found := ctx.checkPotentialSeparation(token); found {
+		return ctx.getAndSeparateToken()
 	} else {
 		return ctx.getTokenFieldTokenHelper(token)
 	}
@@ -1009,6 +1083,11 @@ func (ctx *expressionParserContext) mergeAndRestoreSubContexts(olderSubCtx *pars
 		return nil
 	}
 
+	// If user enters a true/false and enclosed it in paren, don't merge
+	if !ctx.subCtx.oneLayerMode && olderSubCtx.fieldIsTrueOrFalse {
+		return nil
+	}
+
 	// Boundary check
 	if olderSubCtx.lastOpIndex >= len(ctx.parserTree.data) {
 		return ErrorNotFound
@@ -1121,6 +1200,31 @@ func (ctx *expressionParserContext) parse() error {
 	return err
 }
 
+// Given a potentially unseparated token, and the current context mode, see if we
+// can separate it just enough to get the supposed token
+func (ctx *expressionParserContext) checkPotentialSeparation(token string) bool {
+	ctx.subCtx.lastSeeker = NewOpSeeker(token)
+	return ctx.subCtx.lastSeeker.Seek()
+}
+
+func (ctx *expressionParserContext) getAndSeparateToken() (string, ParseTokenType, error) {
+	lastSeeker := ctx.subCtx.lastSeeker
+	delim := lastSeeker.GetToken()
+	token := ctx.tokens[ctx.currentTokenIndex]
+
+	tokenSplitSlice := StringSplitFirstInst(token, delim)
+	lenSlice := len(tokenSplitSlice)
+	if lenSlice > 1 {
+		numToInsert := lenSlice - 1
+		ctx.tokens = append(ctx.tokens, make([]string, numToInsert)...)
+		copy(ctx.tokens[ctx.currentTokenIndex+numToInsert:], ctx.tokens[ctx.currentTokenIndex:])
+		for i := 0; i < lenSlice; i++ {
+			ctx.tokens[ctx.currentTokenIndex+i] = tokenSplitSlice[i]
+		}
+	}
+	return ctx.getCurrentToken()
+}
+
 // Output helpers - return the actual node with data (and optionally the index position of the sought after node)
 func (ctx *expressionParserContext) getThisOutputNode(pos int) ParserTreeNode {
 	if pos >= len(ctx.parserDataNodes) {
@@ -1143,14 +1247,19 @@ func (ctx *expressionParserContext) getLeftOutputNode(pos int) (ParserTreeNode, 
 }
 
 func (ctx *expressionParserContext) getRightOutputNode(pos int) (ParserTreeNode, int) {
-	if pos >= len(ctx.parserTree.data) {
+	if pos >= len(ctx.parserTree.data) || pos < 0 {
 		return emptyParserTreeNode, -1
 	}
 	thisNode := ctx.parserTree.data[pos]
 
-	if thisNode.Left >= len(ctx.parserDataNodes) {
+	if thisNode.Left >= len(ctx.parserDataNodes) || thisNode.Left < 0 {
 		return emptyParserTreeNode, -1
 	}
+
+	if thisNode.Right >= len(ctx.parserDataNodes) || thisNode.Right < 0 {
+		return emptyParserTreeNode, -2
+	}
+
 	rightNode := ctx.parserDataNodes[thisNode.Right]
 	return rightNode, thisNode.Right
 }
@@ -1317,6 +1426,10 @@ func (ctx *expressionParserContext) outputOp(node ParserTreeNode, pos int) (Expr
 func (ctx *expressionParserContext) getComparisonSubExprsNodes(node ParserTreeNode, pos int) (Expression, Expression, error) {
 	leftNode, leftPos := ctx.getLeftOutputNode(pos)
 	rightNode, rightPos := ctx.getRightOutputNode(pos)
+
+	if leftPos < 0 || rightPos < 0 {
+		return nil, nil, ErrorNotFound
+	}
 
 	leftSubExpr, err := ctx.outputNode(leftNode, leftPos)
 	if err != nil {
