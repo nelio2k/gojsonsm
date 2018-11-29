@@ -3,6 +3,7 @@
 package gojsonsm
 
 import (
+	"bytes"
 	"strings"
 )
 
@@ -42,4 +43,20 @@ func StringSplitFirstInst(value, delim string) (ss []string) {
 	}
 
 	return
+}
+
+// flatten a string array into a string. each string element in string array is separated by a space
+func FlattenStringArray(input []string) string {
+	var output string
+	if len(input) > 0 {
+		var buffer bytes.Buffer
+		for index, str := range input {
+			if index != 0 {
+				buffer.WriteString(" ")
+			}
+			buffer.WriteString(str)
+		}
+		output = buffer.String()
+	}
+	return output
 }
