@@ -72,49 +72,18 @@ func (f *filterExpressionST) IsTerm() bool {
 }
 
 func (f *filterExpressionST) Init() error {
-	var err error
 	f.i = 0
-	for i := 0; i < len(f.fe.AndConditions); i++ {
-		f.fe.AndConditions[i].stHelper = &feAndConditionST{e: f.fe.AndConditions[i]}
-		err = f.fe.AndConditions[i].stHelper.Init()
-		if err != nil {
+	for _, oneCond := range f.fe.AndConditions {
+		oneCond.stHelper = &feAndConditionST{e: oneCond}
+		if err := oneCond.stHelper.Init(); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// Need to write unit test
 func (f *filterExpressionST) Done() bool {
-	if f.i < len(f.fe.AndConditions)-1 {
-		return false
-	}
-
-	return f.fe.AndConditions[f.i].stHelper.Done()
-}
-
-type FEParen struct {
-	OpenParen  *FEOpenParen  `@@ |`
-	CloseParen *FECloseParen `@@`
-	stHelper   StepThroughIface
-}
-
-func (fep *FEParen) IsOpen() bool {
-	return fep.OpenParen != nil && fep.CloseParen == nil
-}
-
-func (fep *FEParen) IsClose() bool {
-	return fep.CloseParen != nil && fep.OpenParen == nil
-}
-
-func (fep *FEParen) String() string {
-	if fep.IsOpen() {
-		return fep.OpenParen.String()
-	} else if fep.IsClose() {
-		return fep.CloseParen.String()
-	} else {
-		return "?? (FEParen)"
-	}
+	return f.fe.AndConditions[len(f.fe.AndConditions)-1].stHelper.Done()
 }
 
 type FEOpenParen struct {
@@ -126,6 +95,26 @@ func (feop *FEOpenParen) String() string {
 	return "("
 }
 
+type feOpenParenST struct {
+	e      *FEOpenParen
+	called bool
+}
+
+func (f *feOpenParenST) Init() error {
+	if f.e == nil {
+		return ErrorNotFound
+	}
+	return nil
+}
+
+func (f *feOpenParenST) IsTerm() bool {
+	return true
+}
+
+func (f *feOpenParenST) Done() bool {
+	return f.called
+}
+
 type FECloseParen struct {
 	Parens   string `@")"`
 	stHelper StepThroughIface
@@ -133,6 +122,26 @@ type FECloseParen struct {
 
 func (fecp *FECloseParen) String() string {
 	return ")"
+}
+
+type feCloseParenST struct {
+	e      *FECloseParen
+	called bool
+}
+
+func (f *feCloseParenST) Init() error {
+	if f.e == nil {
+		return ErrorNotFound
+	}
+	return nil
+}
+
+func (f *feCloseParenST) IsTerm() bool {
+	return true
+}
+
+func (f *feCloseParenST) Done() bool {
+	return f.called
 }
 
 type FEAndCondition struct {
@@ -162,16 +171,24 @@ type feAndConditionST struct {
 	i int
 }
 
-func (e *feAndConditionST) IsTerm() bool {
+func (f *feAndConditionST) IsTerm() bool {
 	return false
 }
 
-func (e *feAndConditionST) Done() bool {
-	// TODO
-	return false
+func (f *feAndConditionST) Done() bool {
+	return f.e.OrConditions[len(f.e.OrConditions)-1].stHelper.Done()
 }
 
-func (e *feAndConditionST) Init() error {
+func (f *feAndConditionST) Init() error {
+	f.i = 0
+
+	for _, oneCond := range f.e.OrConditions {
+		oneCond.stHelper = &feConditionST{e: oneCond}
+		if err := oneCond.stHelper.Init(); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -205,6 +222,77 @@ func (fec *FECondition) String() string {
 	return strings.Join(outputStr, " ")
 }
 
+type feConditionST struct {
+	e                   *FECondition
+	skipPreParen        bool
+	skipPostParen       bool
+	needToGetSpecialNot bool
+	hasGottenSpecialNot bool
+}
+
+func (f *feConditionST) IsTerm() bool {
+	return false
+}
+
+func (f *feConditionST) Done() bool {
+	if !f.skipPostParen {
+		return f.e.PostParen[len(f.e.PostParen)-1].stHelper.Done()
+	} else if f.needToGetSpecialNot && f.hasGottenSpecialNot {
+		return f.e.Not.stHelper.Done()
+	} else {
+		return f.e.Operand.stHelper.Done()
+	}
+}
+
+func (f *feConditionST) Init() error {
+	if f.e.Not == nil && f.e.Operand == nil {
+		return ErrorNotFound
+	}
+
+	if len(f.e.PreParen) > 0 {
+		for _, p := range f.e.PreParen {
+			p.stHelper = &feOpenParenST{e: p}
+			err := p.stHelper.Init()
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		f.skipPreParen = true
+	}
+
+	if f.e.Not != nil {
+		f.needToGetSpecialNot = true
+		f.e.Not.stHelper = &feConditionST{e: f.e.Not}
+		err := f.e.Not.stHelper.Init()
+		if err != nil {
+			return err
+		}
+	}
+
+	if f.e.Operand != nil {
+		f.e.Operand.stHelper = &feOperandST{e: f.e.Operand}
+		err := f.e.Operand.stHelper.Init()
+		if err != nil {
+			return err
+		}
+	}
+
+	if len(f.e.PostParen) > 0 {
+		for _, p := range f.e.PostParen {
+			p.stHelper = &feCloseParenST{e: p}
+			err := p.stHelper.Init()
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		f.skipPostParen = true
+	}
+
+	return nil
+}
+
 type FEOperand struct {
 	BooleanExpr *FEBooleanExpr `@@ |`
 	LHS         *FELhs         `( @@ (`
@@ -226,6 +314,62 @@ func (feo *FEOperand) String() string {
 	}
 }
 
+type feOperandST struct {
+	e *FEOperand
+}
+
+func (f *feOperandST) Init() error {
+	if f.e.BooleanExpr != nil {
+		f.e.BooleanExpr.stHelper = &feBooleanExprST{e: f.e.BooleanExpr}
+		return f.e.BooleanExpr.stHelper.Init()
+	} else if f.e.LHS != nil {
+		f.e.LHS.stHelper = &feLhsST{e: f.e.LHS}
+		err := f.e.LHS.stHelper.Init()
+		if err != nil {
+			return err
+		}
+		if f.e.Op != nil {
+			f.e.Op.stHelper = &feCompareOpST{e: f.e.Op}
+			err := f.e.Op.stHelper.Init()
+			if err != nil {
+				return err
+			}
+
+			if f.e.RHS == nil {
+				return ErrorNotFound
+			}
+
+			f.e.RHS.stHelper = &feRhsST{e: f.e.RHS}
+			return f.e.RHS.stHelper.Init()
+		} else if f.e.CheckOp != nil {
+			f.e.CheckOp.stHelper = &feCheckOpST{e: f.e.CheckOp}
+			return f.e.CheckOp.stHelper.Init()
+		} else {
+			return ErrorNotFound
+		}
+	} else {
+		return ErrorNotFound
+	}
+}
+
+func (f *feOperandST) IsTerm() bool {
+	return false
+}
+
+func (f *feOperandST) Done() bool {
+	if f.e.BooleanExpr != nil {
+		return f.e.BooleanExpr.stHelper.Done()
+	} else if f.e.LHS != nil {
+		if f.e.CheckOp != nil {
+			return f.e.LHS.stHelper.Done() && f.e.CheckOp.stHelper.Done()
+		} else {
+			return f.e.LHS.stHelper.Done() && f.e.Op.stHelper.Done() && f.e.RHS.stHelper.Done()
+		}
+	} else {
+		return false
+	}
+}
+
 type FEBooleanExpr struct {
 	BooleanVal  *FEBoolean         `@@ |`
 	BooleanFunc *FEBooleanFuncExpr `@@`
@@ -240,6 +384,37 @@ func (be *FEBooleanExpr) String() string {
 	} else {
 		return "?? (FEBooleanExpr)"
 	}
+}
+
+type feBooleanExprST struct {
+	e *FEBooleanExpr
+}
+
+func (f *feBooleanExprST) IsTerm() bool {
+	if f.e.BooleanFunc != nil {
+		return f.e.BooleanFunc.stHelper.IsTerm()
+	} else {
+		return f.e.BooleanVal.stHelper.IsTerm()
+	}
+}
+
+func (f *feBooleanExprST) Done() bool {
+	if f.e.BooleanFunc != nil {
+		return f.e.BooleanFunc.stHelper.Done()
+	} else {
+		return f.e.BooleanVal.stHelper.Done()
+	}
+}
+
+func (f *feBooleanExprST) Init() error {
+	if f.e.BooleanFunc != nil {
+		f.e.BooleanFunc.stHelper = &feBooleanFuncExprST{e: f.e.BooleanFunc}
+		return f.e.BooleanFunc.stHelper.Init()
+	} else {
+		f.e.BooleanVal.stHelper = &feBooleanST{e: f.e.BooleanVal}
+		return f.e.BooleanVal.stHelper.Init()
+	}
+	return nil
 }
 
 type FEBoolean struct {
@@ -280,6 +455,27 @@ func (feb *FEBoolean) IsSet() bool {
 	return feb.TVal != nil || feb.TVal1 != nil || feb.FVal != nil || feb.FVal1 != nil
 }
 
+type feBooleanST struct {
+	e                *FEBoolean
+	hasBeenRetrieved bool
+}
+
+func (f *feBooleanST) IsTerm() bool {
+	return true
+}
+
+func (f *feBooleanST) Done() bool {
+	return f.hasBeenRetrieved
+}
+
+func (f *feBooleanST) Init() error {
+	if f.e == nil {
+		return ErrorNotFound
+	}
+	f.hasBeenRetrieved = false
+	return nil
+}
+
 type FELhs struct {
 	Func     *FEConstFuncExpression `( @@ |`
 	Field    *FEField               `@@ |`
@@ -296,6 +492,41 @@ func (fel *FELhs) String() string {
 		return fel.Func.String()
 	} else {
 		return "?? (FELhs)"
+	}
+}
+
+type feLhsST struct {
+	e *FELhs
+}
+
+func (f *feLhsST) Init() error {
+	if f.e.Field != nil {
+		f.e.Field.stHelper = &feFieldST{e: f.e.Field}
+		return f.e.Field.stHelper.Init()
+	} else if f.e.Value != nil {
+		f.e.Value.stHelper = &feValueST{e: f.e.Value}
+		return f.e.Value.stHelper.Init()
+	} else if f.e.Func != nil {
+		f.e.Func.stHelper = &feConstFuncExpressionST{e: f.e.Func}
+		return f.e.Func.stHelper.Init()
+	} else {
+		return ErrorNotFound
+	}
+}
+
+func (f *feLhsST) IsTerm() bool {
+	return false
+}
+
+func (f *feLhsST) Done() bool {
+	if f.e.Field != nil {
+		return f.e.Field.stHelper.Done()
+	} else if f.e.Value != nil {
+		return f.e.Value.stHelper.Done()
+	} else if f.e.Func != nil {
+		return f.e.Func.stHelper.Done()
+	} else {
+		return false
 	}
 }
 
@@ -319,6 +550,41 @@ func (fer *FERhs) String() string {
 	}
 }
 
+type feRhsST struct {
+	e *FERhs
+}
+
+func (f *feRhsST) Init() error {
+	if f.e.Field != nil {
+		f.e.Field.stHelper = &feFieldST{e: f.e.Field}
+		return f.e.Field.stHelper.Init()
+	} else if f.e.Value != nil {
+		f.e.Value.stHelper = &feValueST{e: f.e.Value}
+		return f.e.Value.stHelper.Init()
+	} else if f.e.Func != nil {
+		f.e.Func.stHelper = &feConstFuncExpressionST{e: f.e.Func}
+		return f.e.Func.stHelper.Init()
+	} else {
+		return ErrorNotFound
+	}
+}
+
+func (f *feRhsST) IsTerm() bool {
+	return false
+}
+
+func (f *feRhsST) Done() bool {
+	if f.e.Field != nil {
+		return f.e.Field.stHelper.Done()
+	} else if f.e.Value != nil {
+		return f.e.Value.stHelper.Done()
+	} else if f.e.Func != nil {
+		return f.e.Func.stHelper.Done()
+	} else {
+		return false
+	}
+}
+
 type FEField struct {
 	Path     []*FEOnePath `@@ { "." @@ }`
 	stHelper StepThroughIface
@@ -330,6 +596,34 @@ func (fef *FEField) String() string {
 		output = append(output, onePath.String())
 	}
 	return strings.Join(output, ".")
+}
+
+type feFieldST struct {
+	e   *FEField
+	idx int
+}
+
+func (f *feFieldST) Init() error {
+	if len(f.e.Path) == 0 {
+		return ErrorNotFound
+	}
+
+	for _, path := range f.e.Path {
+		path.stHelper = &feOnePathST{e: path}
+		err := path.stHelper.Init()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *feFieldST) IsTerm() bool {
+	return false
+}
+
+func (f *feFieldST) Done() bool {
+	return f.e.Path[len(f.e.Path)-1].stHelper.Done()
 }
 
 type FEOnePath struct {
@@ -357,6 +651,62 @@ func (feop *FEOnePath) String() string {
 	return strings.Join(output, " ")
 }
 
+type feOnePathST struct {
+	e            *FEOnePath
+	skipArrayIdx bool
+	terminal     bool
+	called       bool
+	idx          int
+}
+
+func (f *feOnePathST) Init() error {
+	if len(f.e.EscapedStrVal) == 0 && f.e.OnePathFunc == nil && len(f.e.StrValue) == 0 {
+		return ErrorNotFound
+	}
+
+	if f.e.OnePathFunc != nil {
+		f.e.OnePathFunc.stHelper = &feOnePathFuncExprST{e: f.e.OnePathFunc}
+		err := f.e.OnePathFunc.stHelper.Init()
+		if err != nil {
+			return err
+		}
+	}
+
+	if len(f.e.ArrayIndexes) == 0 {
+		f.skipArrayIdx = true
+	} else {
+		for _, idx := range f.e.ArrayIndexes {
+			idx.stHelper = &feArrayIndexST{e: idx}
+			err := idx.stHelper.Init()
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	if len(f.e.ArrayIndexes) == 0 && f.e.OnePathFunc == nil {
+		f.terminal = true
+	}
+
+	return nil
+}
+
+func (f *feOnePathST) IsTerm() bool {
+	return f.terminal
+}
+
+func (f *feOnePathST) Done() bool {
+	if f.skipArrayIdx {
+		if f.e.OnePathFunc == nil {
+			return f.called
+		} else {
+			return f.e.OnePathFunc.stHelper.Done()
+		}
+	} else {
+		return f.e.ArrayIndexes[len(f.e.ArrayIndexes)-1].stHelper.Done()
+	}
+}
+
 type FEArrayIndex struct {
 	ArrayIndex string `"[" [ @"-" ] @Int "]"`
 	stHelper   StepThroughIface
@@ -364,6 +714,26 @@ type FEArrayIndex struct {
 
 func (i *FEArrayIndex) String() string {
 	return fmt.Sprintf("[%v]", i.ArrayIndex)
+}
+
+type feArrayIndexST struct {
+	e      *FEArrayIndex
+	called bool
+}
+
+func (f *feArrayIndexST) Init() error {
+	if len(f.e.ArrayIndex) == 0 {
+		return ErrorNotFound
+	}
+	return nil
+}
+
+func (f *feArrayIndexST) IsTerm() bool {
+	return true
+}
+
+func (f *feArrayIndexST) Done() bool {
+	return f.called
 }
 
 type FEOnePathFuncExpr struct {
@@ -379,6 +749,26 @@ func (e *FEOnePathFuncExpr) String() string {
 	}
 }
 
+type feOnePathFuncExprST struct {
+	e *FEOnePathFuncExpr
+}
+
+func (f *feOnePathFuncExprST) Init() error {
+	if f.e.OnePathFuncNoArg == nil {
+		return ErrorNotFound
+	}
+	f.e.OnePathFuncNoArg.stHelper = &feOnePathFuncNoArgST{e: f.e.OnePathFuncNoArg}
+	return f.e.OnePathFuncNoArg.stHelper.Init()
+}
+
+func (f *feOnePathFuncExprST) IsTerm() bool {
+	return false
+}
+
+func (f *feOnePathFuncExprST) Done() bool {
+	return f.e.OnePathFuncNoArg.stHelper.Done()
+}
+
 type FEOnePathFuncNoArg struct {
 	OnePathFuncNoArgName *FEOnePathFuncNoArgName `( @@ "(" ")" )`
 	stHelper             StepThroughIface
@@ -392,6 +782,26 @@ func (na *FEOnePathFuncNoArg) String() string {
 	}
 }
 
+type feOnePathFuncNoArgST struct {
+	e *FEOnePathFuncNoArg
+}
+
+func (f *feOnePathFuncNoArgST) Init() error {
+	if f.e.OnePathFuncNoArgName == nil {
+		return ErrorNotFound
+	}
+	f.e.OnePathFuncNoArgName.stHelper = &feOnePathFuncNoArgNameST{e: f.e.OnePathFuncNoArgName}
+	return f.e.OnePathFuncNoArgName.stHelper.Init()
+}
+
+func (f *feOnePathFuncNoArgST) IsTerm() bool {
+	return false
+}
+
+func (f *feOnePathFuncNoArgST) Done() bool {
+	return f.e.OnePathFuncNoArgName.stHelper.Done()
+}
+
 type FEOnePathFuncNoArgName struct {
 	Meta     *bool `@"META"`
 	stHelper StepThroughIface
@@ -403,6 +813,26 @@ func (n *FEOnePathFuncNoArgName) String() string {
 	} else {
 		return "?? (FEOnePathFuncNoArgName)"
 	}
+}
+
+type feOnePathFuncNoArgNameST struct {
+	e      *FEOnePathFuncNoArgName
+	called bool
+}
+
+func (f *feOnePathFuncNoArgNameST) Init() error {
+	if f.e.Meta == nil {
+		return ErrorNotFound
+	}
+	return nil
+}
+
+func (f *feOnePathFuncNoArgNameST) IsTerm() bool {
+	return true
+}
+
+func (f *feOnePathFuncNoArgNameST) Done() bool {
+	return f.called
 }
 
 type FEValue struct {
@@ -424,6 +854,26 @@ func (fev *FEValue) String() string {
 	}
 }
 
+type feValueST struct {
+	e      *FEValue
+	called bool
+}
+
+func (f *feValueST) Init() error {
+	if f.e.StrValue == nil && f.e.IntValue == nil && f.e.FloatValue == nil {
+		return ErrorNotFound
+	}
+	return nil
+}
+
+func (f *feValueST) IsTerm() bool {
+	return true
+}
+
+func (f *feValueST) Done() bool {
+	return f.called
+}
+
 // We have to do this funky way of matching because our FEOperand expression may not be composed of a compareOp
 // And due to the complicated FEOperand op, we have to do char by char match so we can catch the not-matched case
 // and go to the other type of operands
@@ -433,6 +883,26 @@ type FEOpChar struct {
 	LessThan    *bool `@"<" |`
 	GreaterThan *bool `@">" )`
 	stHelper    StepThroughIface
+}
+
+type feOpCharST struct {
+	e      *FEOpChar
+	called bool
+}
+
+func (f *feOpCharST) Init() error {
+	if f.e.Equal == nil && f.e.LessThan == nil && f.e.GreaterThan == nil {
+		return ErrorNotFound
+	}
+	return nil
+}
+
+func (f *feOpCharST) IsTerm() bool {
+	return true
+}
+
+func (f *feOpCharST) Done() bool {
+	return f.called
 }
 
 type FECompareOp struct {
@@ -488,6 +958,40 @@ func (feo *FECompareOp) String() string {
 	return ""
 }
 
+type feCompareOpST struct {
+	e *FECompareOp
+}
+
+func (f *feCompareOpST) Init() error {
+	if f.e.OpChars0 == nil {
+		return ErrorNotFound
+	} else {
+		f.e.OpChars0.stHelper = &feOpCharST{e: f.e.OpChars0}
+		err := f.e.OpChars0.stHelper.Init()
+		if err != nil {
+			return err
+		}
+	}
+
+	if f.e.OpChars1 != nil {
+		f.e.OpChars1.stHelper = &feOpCharST{e: f.e.OpChars1}
+		return f.e.OpChars1.stHelper.Init()
+	}
+	return nil
+}
+
+func (f *feCompareOpST) IsTerm() bool {
+	return false
+}
+
+func (f *feCompareOpST) Done() bool {
+	if f.e.OpChars1 != nil {
+		return f.e.OpChars0.stHelper.Done() && f.e.OpChars1.stHelper.Done()
+	} else {
+		return f.e.OpChars0.stHelper.Done()
+	}
+}
+
 type FECheckOp struct {
 	Exists   *bool `@"EXISTS" | ( "IS"`
 	Not      *bool `[ @"NOT" ]`
@@ -536,6 +1040,26 @@ func (feco *FECheckOp) String() string {
 	}
 }
 
+type feCheckOpST struct {
+	e      *FECheckOp
+	called bool
+}
+
+func (f *feCheckOpST) Init() error {
+	if f.e.Exists == nil && f.e.Not == nil && f.e.Null == nil && f.e.Missing == nil {
+		return ErrorNotFound
+	}
+	return nil
+}
+
+func (f *feCheckOpST) IsTerm() bool {
+	return true
+}
+
+func (f *feCheckOpST) Done() bool {
+	return f.called
+}
+
 // Technically we could have an slice of arguments, but having OneArg vs NoArg vs TwoArg could
 // allow us to do more strict function check (i.e. certain funcs should only allow one argument, etc, at this level)
 type FEConstFuncExpression struct {
@@ -557,6 +1081,39 @@ func (f *FEConstFuncExpression) String() string {
 	}
 }
 
+type feConstFuncExpressionST struct {
+	e *FEConstFuncExpression
+}
+
+func (f *feConstFuncExpressionST) Init() error {
+	if f.e.ConstFuncNoArg != nil {
+		f.e.ConstFuncNoArg.stHelper = &feConstFuncNoArgST{e: f.e.ConstFuncNoArg}
+		return f.e.ConstFuncNoArg.stHelper.Init()
+	} else if f.e.ConstFuncOneArg != nil {
+		f.e.ConstFuncOneArg.stHelper = &feConstFuncOneArgST{e: f.e.ConstFuncOneArg}
+		return f.e.ConstFuncOneArg.stHelper.Init()
+	} else if f.e.ConstFuncTwoArgs != nil {
+		f.e.ConstFuncTwoArgs.stHelper = &feConstFuncTwoArgsST{e: f.e.ConstFuncTwoArgs}
+		return f.e.ConstFuncTwoArgs.stHelper.Init()
+	} else {
+		return ErrorNotFound
+	}
+}
+
+func (f *feConstFuncExpressionST) Done() bool {
+	if f.e.ConstFuncNoArg != nil {
+		return f.e.ConstFuncNoArg.stHelper.Done()
+	} else if f.e.ConstFuncOneArg != nil {
+		return f.e.ConstFuncOneArg.stHelper.Done()
+	} else {
+		return f.e.ConstFuncTwoArgs.stHelper.Done()
+	}
+}
+
+func (f *feConstFuncExpressionST) IsTerm() bool {
+	return false
+}
+
 type FEConstFuncNoArg struct {
 	ConstFuncNoArgName *FEConstFuncNoArgName `( @@ "(" ")" )`
 	stHelper           StepThroughIface
@@ -568,6 +1125,26 @@ func (f *FEConstFuncNoArg) String() string {
 	} else {
 		return "?? (FEConstFuncNoArg)"
 	}
+}
+
+type feConstFuncNoArgST struct {
+	e *FEConstFuncNoArg
+}
+
+func (f *feConstFuncNoArgST) Init() error {
+	if f.e.ConstFuncNoArgName != nil {
+		f.e.ConstFuncNoArgName.stHelper = &feConstFuncNoArgNameST{e: f.e.ConstFuncNoArgName}
+		return f.e.ConstFuncNoArgName.stHelper.Init()
+	}
+	return ErrorNotFound
+}
+
+func (f *feConstFuncNoArgST) IsTerm() bool {
+	return false
+}
+
+func (f *feConstFuncNoArgST) Done() bool {
+	return f.e.ConstFuncNoArgName.stHelper.Done()
 }
 
 type FEConstFuncNoArgName struct {
@@ -584,6 +1161,26 @@ func (n *FEConstFuncNoArgName) String() string {
 	} else {
 		return "?? (FEConstFuncNoArgName)"
 	}
+}
+
+type feConstFuncNoArgNameST struct {
+	e      *FEConstFuncNoArgName
+	called bool
+}
+
+func (f *feConstFuncNoArgNameST) Init() error {
+	if f.e.E == nil && f.e.Pi == nil {
+		return ErrorNotFound
+	}
+	return nil
+}
+
+func (f *feConstFuncNoArgNameST) IsTerm() bool {
+	return true
+}
+
+func (f *feConstFuncNoArgNameST) Done() bool {
+	return f.called
 }
 
 // Order matters
@@ -606,6 +1203,41 @@ func (arg *FEConstFuncArgument) String() string {
 	}
 }
 
+type feConstFuncArgumentST struct {
+	e *FEConstFuncArgument
+}
+
+func (f *feConstFuncArgumentST) Init() error {
+	if f.e.SubFunc != nil {
+		f.e.SubFunc.stHelper = &feConstFuncExpressionST{e: f.e.SubFunc}
+		return f.e.SubFunc.stHelper.Init()
+	} else if f.e.Field != nil {
+		f.e.Field.stHelper = &feFieldST{e: f.e.Field}
+		return f.e.Field.stHelper.Init()
+	} else if f.e.Argument != nil {
+		f.e.Argument.stHelper = &feValueST{e: f.e.Argument}
+		return f.e.Argument.stHelper.Init()
+	} else {
+		return ErrorNotFound
+	}
+}
+
+func (f *feConstFuncArgumentST) IsTerm() bool {
+	return false
+}
+
+func (f *feConstFuncArgumentST) Done() bool {
+	if f.e.SubFunc != nil {
+		return f.e.SubFunc.stHelper.Done()
+	} else if f.e.Field != nil {
+		return f.e.Field.stHelper.Done()
+	} else if f.e.Argument != nil {
+		return f.e.Argument.stHelper.Done()
+	} else {
+		return true
+	}
+}
+
 // Prioritize value over field
 type FEConstFuncArgumentRHS struct {
 	SubFunc  *FEConstFuncExpression `@@ |`
@@ -623,6 +1255,34 @@ func (arg *FEConstFuncArgumentRHS) String() string {
 	}
 }
 
+type feConstFuncArgumentRHSST struct {
+	e *FEConstFuncArgumentRHS
+}
+
+func (f *feConstFuncArgumentRHSST) Init() error {
+	if f.e.SubFunc != nil {
+		f.e.SubFunc.stHelper = &feConstFuncExpressionST{e: f.e.SubFunc}
+		return f.e.SubFunc.stHelper.Init()
+	} else if f.e.Argument != nil {
+		f.e.Argument.stHelper = &feValueST{e: f.e.Argument}
+		return f.e.Argument.stHelper.Init()
+	} else {
+		return ErrorNotFound
+	}
+}
+
+func (f *feConstFuncArgumentRHSST) IsTerm() bool {
+	return false
+}
+
+func (f *feConstFuncArgumentRHSST) Done() bool {
+	if f.e.SubFunc != nil {
+		return f.e.SubFunc.stHelper.Done()
+	} else {
+		return f.e.Argument.stHelper.Done()
+	}
+}
+
 type FEConstFuncOneArg struct {
 	ConstFuncOneArgName *FEConstFuncOneArgName `( @@ "("`
 	Argument            *FEConstFuncArgument   `@@ ")" )`
@@ -631,6 +1291,31 @@ type FEConstFuncOneArg struct {
 
 func (oa *FEConstFuncOneArg) String() string {
 	return fmt.Sprintf("%v( %v )", oa.ConstFuncOneArgName.String(), oa.Argument.String())
+}
+
+type feConstFuncOneArgST struct {
+	e *FEConstFuncOneArg
+}
+
+func (f *feConstFuncOneArgST) Init() error {
+	if f.e.ConstFuncOneArgName == nil || f.e.Argument == nil {
+		return ErrorNotFound
+	}
+	f.e.ConstFuncOneArgName.stHelper = &feConstFuncOneArgNameST{e: f.e.ConstFuncOneArgName}
+	err := f.e.ConstFuncOneArgName.stHelper.Init()
+	if err != nil {
+		return err
+	}
+	f.e.Argument.stHelper = &feConstFuncArgumentST{e: f.e.Argument}
+	return f.e.Argument.stHelper.Init()
+}
+
+func (f *feConstFuncOneArgST) IsTerm() bool {
+	return false
+}
+
+func (f *feConstFuncOneArgST) Done() bool {
+	return f.e.ConstFuncOneArgName.stHelper.Done() && f.e.Argument.stHelper.Done()
 }
 
 type FEConstFuncOneArgName struct {
@@ -694,6 +1379,26 @@ func (arg *FEConstFuncOneArgName) String() string {
 	}
 }
 
+type feConstFuncOneArgNameST struct {
+	e      *FEConstFuncOneArgName
+	called bool
+}
+
+func (f *feConstFuncOneArgNameST) Init() error {
+	if strings.Contains(f.e.String(), "??") {
+		return ErrorNotFound
+	}
+	return nil
+}
+
+func (f *feConstFuncOneArgNameST) IsTerm() bool {
+	return true
+}
+
+func (f *feConstFuncOneArgNameST) Done() bool {
+	return f.called
+}
+
 type FEConstFuncTwoArgs struct {
 	ConstFuncTwoArgsName *FEConstFuncTwoArgsName `( @@ "("`
 	Argument0            *FEConstFuncArgument    `@@ "," `
@@ -703,6 +1408,40 @@ type FEConstFuncTwoArgs struct {
 
 func (fta *FEConstFuncTwoArgs) String() string {
 	return fmt.Sprintf("%v( %v , %v )", fta.ConstFuncTwoArgsName.String(), fta.Argument0.String(), fta.Argument1.String())
+}
+
+type feConstFuncTwoArgsST struct {
+	e *FEConstFuncTwoArgs
+}
+
+func (f *feConstFuncTwoArgsST) Init() error {
+	if f.e.ConstFuncTwoArgsName == nil || f.e.Argument0 == nil || f.e.Argument1 == nil {
+		return ErrorNotFound
+	}
+
+	f.e.ConstFuncTwoArgsName.stHelper = &feConstFuncTwoArgsNameST{e: f.e.ConstFuncTwoArgsName}
+	err := f.e.ConstFuncTwoArgsName.stHelper.Init()
+	if err != nil {
+		return err
+	}
+
+	f.e.Argument0.stHelper = &feConstFuncArgumentST{e: f.e.Argument0}
+	err = f.e.Argument0.stHelper.Init()
+	if err != nil {
+		return err
+	}
+
+	f.e.Argument1.stHelper = &feConstFuncArgumentST{e: f.e.Argument1}
+	err = f.e.Argument1.stHelper.Init()
+	return err
+}
+
+func (f *feConstFuncTwoArgsST) IsTerm() bool {
+	return false
+}
+
+func (f *feConstFuncTwoArgsST) Done() bool {
+	return f.e.ConstFuncTwoArgsName.stHelper.Done() && f.e.Argument0.stHelper.Done() && f.e.Argument1.stHelper.Done()
 }
 
 type FEConstFuncTwoArgsName struct {
@@ -721,6 +1460,26 @@ func (arg *FEConstFuncTwoArgsName) String() string {
 	}
 }
 
+type feConstFuncTwoArgsNameST struct {
+	e      *FEConstFuncTwoArgsName
+	called bool
+}
+
+func (f *feConstFuncTwoArgsNameST) Init() error {
+	if f.e.Atan2 == nil && f.e.Power == nil {
+		return ErrorNotFound
+	}
+	return nil
+}
+
+func (f *feConstFuncTwoArgsNameST) IsTerm() bool {
+	return true
+}
+
+func (f *feConstFuncTwoArgsNameST) Done() bool {
+	return f.called
+}
+
 type FEBooleanFuncExpr struct {
 	BooleanFuncTwoArgs *FEBooleanFuncTwoArgs `@@`
 	stHelper           StepThroughIface
@@ -732,6 +1491,26 @@ func (e *FEBooleanFuncExpr) String() string {
 	} else {
 		return "?? (FEBooleanFuncExpr)"
 	}
+}
+
+type feBooleanFuncExprST struct {
+	e *FEBooleanFuncExpr
+}
+
+func (f *feBooleanFuncExprST) Init() error {
+	if f.e.BooleanFuncTwoArgs != nil {
+		f.e.BooleanFuncTwoArgs.stHelper = &feBooleanFuncTwoArgsST{e: f.e.BooleanFuncTwoArgs}
+		return f.e.BooleanFuncTwoArgs.stHelper.Init()
+	}
+	return ErrorNotFound
+}
+
+func (f *feBooleanFuncExprST) IsTerm() bool {
+	return false
+}
+
+func (f *feBooleanFuncExprST) Done() bool {
+	return f.e.BooleanFuncTwoArgs.stHelper.Done()
 }
 
 type FEBooleanFuncTwoArgs struct {
@@ -749,6 +1528,38 @@ func (a *FEBooleanFuncTwoArgs) String() string {
 	}
 }
 
+type feBooleanFuncTwoArgsST struct {
+	e *FEBooleanFuncTwoArgs
+}
+
+func (f *feBooleanFuncTwoArgsST) Init() error {
+	if f.e.Argument0 == nil || f.e.Argument1 == nil || f.e.BooleanFuncTwoArgsName == nil {
+		return ErrorNotFound
+	}
+
+	f.e.BooleanFuncTwoArgsName.stHelper = &feBooleanFuncTwoArgsNameST{e: f.e.BooleanFuncTwoArgsName}
+	err := f.e.BooleanFuncTwoArgsName.stHelper.Init()
+	if err != nil {
+		return err
+	}
+
+	f.e.Argument0.stHelper = &feConstFuncArgumentST{e: f.e.Argument0}
+	err = f.e.Argument0.stHelper.Init()
+	if err != nil {
+		return err
+	}
+	f.e.Argument1.stHelper = &feConstFuncArgumentRHSST{e: f.e.Argument1}
+	return f.e.Argument1.stHelper.Init()
+}
+
+func (f *feBooleanFuncTwoArgsST) Done() bool {
+	return f.e.stHelper.Done()
+}
+
+func (f *feBooleanFuncTwoArgsST) IsTerm() bool {
+	return false
+}
+
 type FEBooleanFuncTwoArgsName struct {
 	RegexContains *bool `@"REGEXP_CONTAINS"`
 	stHelper      StepThroughIface
@@ -760,6 +1571,26 @@ func (n *FEBooleanFuncTwoArgsName) String() string {
 	} else {
 		return "?? (FEBooleanFuncTwoArgsName)"
 	}
+}
+
+type feBooleanFuncTwoArgsNameST struct {
+	e      *FEBooleanFuncTwoArgsName
+	called bool
+}
+
+func (f *feBooleanFuncTwoArgsNameST) Init() error {
+	if f.e == nil {
+		return ErrorNotFound
+	}
+	return nil
+}
+
+func (f *feBooleanFuncTwoArgsNameST) IsTerm() bool {
+	return true
+}
+
+func (f *feBooleanFuncTwoArgsNameST) Done() bool {
+	return f.called
 }
 
 func NewFilterExpressionParser(expression string) (*participle.Parser, *FilterExpression, error) {
