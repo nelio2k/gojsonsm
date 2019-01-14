@@ -67,6 +67,15 @@ func (fe *FilterExpression) String() string {
 		output = append(output, expr.String())
 	}
 
+	for _, expr := range fe.SubFilterExpr {
+		if first {
+			first = false
+		} else {
+			output = append(output, "AND")
+		}
+		output = append(output, expr.String())
+	}
+
 	return strings.Join(output, " ")
 }
 
@@ -163,6 +172,10 @@ type FEAndCondition struct {
 func (ac *FEAndCondition) String() string {
 	output := []string{}
 
+	for _, e := range ac.OpenParens {
+		output = append(output, e.String())
+	}
+
 	first := true
 	for _, e := range ac.OrConditions {
 		if first {
@@ -170,6 +183,10 @@ func (ac *FEAndCondition) String() string {
 		} else {
 			output = append(output, "AND")
 		}
+		output = append(output, e.String())
+	}
+
+	for _, e := range ac.CloseParens {
 		output = append(output, e.String())
 	}
 
@@ -206,8 +223,9 @@ func (f *feAndConditionST) Init() error {
 type FECondition struct {
 	//	PreParen  []*FEOpenParen  `{ @@ }`
 	PreParen []*FEOpenParen
-	Not      *FECondition `"NOT" @@`
-	Operand  *FEOperand   `| @@`
+	Not      *FECondition      `"NOT" @@`
+	Operand  *FEOperand        `| @@`
+	SubExpr  *FilterExpression `| @@`
 	//	PostParen []*FECloseParen `{ @@ }`
 	PostParen []*FECloseParen
 	stHelper  StepThroughIface
@@ -224,6 +242,8 @@ func (fec *FECondition) String() string {
 		outputStr = append(outputStr, fmt.Sprintf("NOT %v", fec.Not.String()))
 	} else if fec.Operand != nil {
 		outputStr = append(outputStr, fec.Operand.String())
+	} else if fec.SubExpr != nil {
+		outputStr = append(outputStr, fec.SubExpr.String())
 	} else {
 		outputStr = append(outputStr, "?? (FECondition)")
 	}

@@ -65,9 +65,12 @@ func TestFilterExpressionParser(t *testing.T) {
 	//	converter = FEConverter{expression: fe}
 	//	assert.Nil(converter.Init())
 	//
-	//	fe = &FilterExpression{}
-	//	err = parser.ParseString("(TRUE AND FALSE) OR (FALSE)", fe)
-	//	assert.Nil(err)
+	fe = &FilterExpression{}
+	err = parser.ParseString("(TRUE AND FALSE) OR (FALSE)", fe)
+	assert.Nil(err)
+	assert.Equal(2, len(fe.AndConditions))
+	assert.Equal(2, len(fe.AndConditions[0].OrConditions))
+	assert.Equal(1, len(fe.AndConditions[1].OrConditions))
 	//	assert.Equal(2, len(fe.AndConditions))
 	//	assert.Equal(2, len(fe.AndConditions[0].OrConditions))
 	//	assert.Equal(1, len(fe.AndConditions[0].OrConditions[0].PreParen))
@@ -77,19 +80,30 @@ func TestFilterExpressionParser(t *testing.T) {
 	//	converter = FEConverter{expression: fe}
 	//	assert.Nil(converter.Init())
 	//
-	//	fe = &FilterExpression{}
-	//	err = parser.ParseString("NOT ((TRUE AND FALSE) OR (NOT (FALSE OR TRUE)))", fe)
-	//	assert.Nil(err)
-	//	converter = FEConverter{expression: fe}
-	//	assert.Nil(converter.Init())
 
-	//	fe = &FilterExpression{}
-	//	err = parser.ParseString("(TRUE OR FALSE) AND (FALSE OR TRUE)", fe)
-	//	assert.Nil(err)
-	//	assert.Equal(3, len(fe.AndConditions))
-	//	assert.Equal(1, len(fe.AndConditions[0].OrConditions))
-	//	converter = FEConverter{expression: fe}
-	//	assert.Nil(converter.Init())
+	fe = &FilterExpression{}
+	err = parser.ParseString("TRUE AND (TRUE OR FALSE) AND FALSE", fe)
+	assert.Nil(err)
+	assert.Equal(1, len(fe.AndConditions))
+	assert.Equal(2, len(fe.AndConditions[0].OrConditions))
+	assert.Nil(fe.AndConditions[0].OrConditions[0].SubExpr) // TRUE (AND...)
+	assert.NotNil(fe.AndConditions[0].OrConditions[1].SubExpr)
+	assert.Equal(2, len(fe.AndConditions[0].OrConditions[1].SubExpr.AndConditions))                 // (TRUE OR FALSE) AND FALSE
+	assert.Equal(1, len(fe.AndConditions[0].OrConditions[1].SubExpr.AndConditions[0].OrConditions)) // (TRUE OR FALSE)
+	assert.Equal(1, len(fe.AndConditions[0].OrConditions[1].SubExpr.AndConditions[1].OrConditions)) //  FALSE
+
+	fe = &FilterExpression{}
+	err = parser.ParseString("(TRUE OR FALSE) AND (FALSE OR TRUE)", fe)
+	assert.Nil(err)
+	assert.Equal(1, len(fe.AndConditions[0].OrConditions))
+	assert.Equal(1, len(fe.AndConditions[1].OrConditions))
+	fmt.Printf("NEIL DEBUG %v OR %v\n", fe.AndConditions[0].String(), fe.AndConditions[1].String())
+	fmt.Printf("NEIL DEBUG sub: %v\n", fe.SubFilterExpr[0].String())
+	assert.Equal(1, len(fe.SubFilterExpr))
+	assert.Equal(2, len(fe.AndConditions))
+	assert.Equal(2, len(fe.SubFilterExpr[0].AndConditions))
+	assert.Equal(1, len(fe.SubFilterExpr[0].AndConditions[0].OrConditions))
+	assert.Equal(1, len(fe.SubFilterExpr[0].AndConditions[1].OrConditions))
 
 	fe = &FilterExpression{}
 	err = parser.ParseString("NOT NOT NOT TRUE", fe)
