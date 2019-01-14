@@ -10,6 +10,8 @@ import (
 
 // EBNF Grammar describing the parser
 
+// FilterExpression	= ( OpenParen ComboCondition CloseParen) | AndCondition { "OR" AndCondition }
+
 // FilterExpression			= AndCondition { "OR" AndCondition }
 // AndCondition 			= Condition { "AND" Condition }
 // Condition				= ( [ "NOT" ] Condition ) | Operand
@@ -40,8 +42,15 @@ import (
 // BooleanFuncTwoArgs		= BooleanFuncTwoArgsName "(" ConstFuncArgument "," ConstFuncArgumentRHS ")"
 // BooleanFuncTwoArgsName 	= "REGEXP_CONTAINS"
 
-type FilterExpression struct {
+type FEComboExpression struct {
 	AndConditions []*FEAndCondition `@@ { "OR" @@ }`
+}
+
+type FilterExpression struct {
+	//	OpenParens    []*FEOpenParen      `{ @@ }`
+	AndConditions []*FEAndCondition `( @@ { "OR" @@ } )`
+	//	CloseParens   []*FECloseParen     `{ @@ }`
+	SubFilterExpr []*FilterExpression `{ "AND" @@ }`
 	stHelper      StepThroughIface
 }
 
@@ -145,7 +154,9 @@ func (f *feCloseParenST) Done() bool {
 }
 
 type FEAndCondition struct {
-	OrConditions []*FECondition `@@ { "AND" @@ }`
+	OpenParens   []*FEOpenParen  `{ @@ }`
+	OrConditions []*FECondition  `@@ { "AND" @@ }`
+	CloseParens  []*FECloseParen `{ @@ }`
 	stHelper     StepThroughIface
 }
 
@@ -193,10 +204,12 @@ func (f *feAndConditionST) Init() error {
 }
 
 type FECondition struct {
-	PreParen  []*FEOpenParen  `{ @@ }`
-	Not       *FECondition    `"NOT" @@`
-	Operand   *FEOperand      `| @@`
-	PostParen []*FECloseParen `{ @@ }`
+	//	PreParen  []*FEOpenParen  `{ @@ }`
+	PreParen []*FEOpenParen
+	Not      *FECondition `"NOT" @@`
+	Operand  *FEOperand   `| @@`
+	//	PostParen []*FECloseParen `{ @@ }`
+	PostParen []*FECloseParen
 	stHelper  StepThroughIface
 }
 
