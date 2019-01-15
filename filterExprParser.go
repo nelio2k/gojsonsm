@@ -10,13 +10,10 @@ import (
 
 // EBNF Grammar describing the parser
 
-// FilterExpression	= ( OpenParen ComboCondition CloseParen) | AndCondition { "OR" AndCondition }
-
-// FilterExpression			= AndCondition { "OR" AndCondition }
-// AndCondition 			= Condition { "AND" Condition }
-// Condition				= ( [ "NOT" ] Condition ) | Operand
-// Operand					= { Paren } BooleanExpr | ( LHS ( CheckOp | ( CompareOp RHS) ) ) { Paren }
-// Paren			    	= OpenParen | CloseParen
+// FilterExpression			= ( AndCondition { "OR" AndCondition } ) { "AND" FilterExpression }
+// AndCondition 			= { OpenParens } Condition { "AND" Condition } { CloseParen }
+// Condition				= ( [ "NOT" ] Condition ) | Operand | FilterExpression
+// Operand					= BooleanExpr | ( LHS ( CheckOp | ( CompareOp RHS) ) )
 // BooleanExpr				= Boolean | BooleanFuncExpr
 // LHS 						= ConstFuncExpr | Field | Value
 // RHS 						= ConstFuncExpr | Value | Field
@@ -47,9 +44,7 @@ type FEComboExpression struct {
 }
 
 type FilterExpression struct {
-	//	OpenParens    []*FEOpenParen      `{ @@ }`
-	AndConditions []*FEAndCondition `( @@ { "OR" @@ } )`
-	//	CloseParens   []*FECloseParen     `{ @@ }`
+	AndConditions []*FEAndCondition   `( @@ { "OR" @@ } )`
 	SubFilterExpr []*FilterExpression `{ "AND" @@ }`
 	stHelper      StepThroughIface
 }
@@ -95,6 +90,15 @@ func (f *filterExpressionST) Init() error {
 		oneCond.stHelper = &feAndConditionST{e: oneCond}
 		if err := oneCond.stHelper.Init(); err != nil {
 			return err
+		}
+	}
+
+	if len(f.fe.SubFilterExpr) > 0 {
+		for _, subF := range f.fe.SubFilterExpr {
+			subF.stHelper = &filterExpressionST{fe: subF}
+			if err := subF.stHelper.Init(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -194,7 +198,9 @@ func (ac *FEAndCondition) String() string {
 }
 
 type feAndConditionST struct {
-	e *FEAndCondition
+	e             *FEAndCondition
+	skipPreParen  bool
+	skipPostParen bool
 
 	i int
 }
@@ -204,11 +210,25 @@ func (f *feAndConditionST) IsTerm() bool {
 }
 
 func (f *feAndConditionST) Done() bool {
-	return f.e.OrConditions[len(f.e.OrConditions)-1].stHelper.Done()
+	if !f.skipPostParen {
+		return f.e.OpenParens[len(f.e.OpenParens)-1].stHelper.Done()
+	} else {
+		return f.e.OrConditions[len(f.e.OrConditions)-1].stHelper.Done()
+	}
 }
 
 func (f *feAndConditionST) Init() error {
 	f.i = 0
+
+	if len(f.e.OpenParens) > 0 {
+		for _, p := range f.e.OpenParens {
+			p.stHelper = &feOpenParenST{e: p}
+			err := p.stHelper.Init()
+			if err != nil {
+				return err
+			}
+		}
+	}
 
 	for _, oneCond := range f.e.OrConditions {
 		oneCond.stHelper = &feConditionST{e: oneCond}
@@ -217,16 +237,24 @@ func (f *feAndConditionST) Init() error {
 		}
 	}
 
+	if len(f.e.CloseParens) > 0 {
+		for _, p := range f.e.CloseParens {
+			p.stHelper = &feCloseParenST{e: p}
+			err := p.stHelper.Init()
+			if err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 
 type FECondition struct {
-	//	PreParen  []*FEOpenParen  `{ @@ }`
-	PreParen []*FEOpenParen
-	Not      *FECondition      `"NOT" @@`
-	Operand  *FEOperand        `| @@`
-	SubExpr  *FilterExpression `| @@`
-	//	PostParen []*FECloseParen `{ @@ }`
+	PreParen  []*FEOpenParen
+	Not       *FECondition      `"NOT" @@`
+	Operand   *FEOperand        `| @@`
+	SubExpr   *FilterExpression `| @@`
 	PostParen []*FECloseParen
 	stHelper  StepThroughIface
 }
@@ -257,10 +285,10 @@ func (fec *FECondition) String() string {
 
 type feConditionST struct {
 	e                   *FECondition
-	skipPreParen        bool
-	skipPostParen       bool
 	needToGetSpecialNot bool
 	hasGottenSpecialNot bool
+	needToGetSubExpr    bool
+	hasGottenSubExpr    bool
 }
 
 func (f *feConditionST) IsTerm() bool {
@@ -268,9 +296,7 @@ func (f *feConditionST) IsTerm() bool {
 }
 
 func (f *feConditionST) Done() bool {
-	if !f.skipPostParen {
-		return f.e.PostParen[len(f.e.PostParen)-1].stHelper.Done()
-	} else if f.needToGetSpecialNot && f.hasGottenSpecialNot {
+	if f.needToGetSpecialNot && f.hasGottenSpecialNot {
 		return f.e.Not.stHelper.Done()
 	} else {
 		return f.e.Operand.stHelper.Done()
@@ -278,20 +304,8 @@ func (f *feConditionST) Done() bool {
 }
 
 func (f *feConditionST) Init() error {
-	if f.e.Not == nil && f.e.Operand == nil {
+	if f.e.Not == nil && f.e.Operand == nil && f.e.SubExpr == nil {
 		return ErrorNotFound
-	}
-
-	if len(f.e.PreParen) > 0 {
-		for _, p := range f.e.PreParen {
-			p.stHelper = &feOpenParenST{e: p}
-			err := p.stHelper.Init()
-			if err != nil {
-				return err
-			}
-		}
-	} else {
-		f.skipPreParen = true
 	}
 
 	if f.e.Not != nil {
@@ -311,16 +325,12 @@ func (f *feConditionST) Init() error {
 		}
 	}
 
-	if len(f.e.PostParen) > 0 {
-		for _, p := range f.e.PostParen {
-			p.stHelper = &feCloseParenST{e: p}
-			err := p.stHelper.Init()
-			if err != nil {
-				return err
-			}
+	if f.e.SubExpr != nil {
+		f.e.SubExpr.stHelper = &filterExpressionST{fe: f.e.SubExpr}
+		err := f.e.SubExpr.stHelper.Init()
+		if err != nil {
+			return err
 		}
-	} else {
-		f.skipPostParen = true
 	}
 
 	return nil
