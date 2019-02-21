@@ -255,3 +255,47 @@ type LikeExpr struct {
 func (expr LikeExpr) String() string {
 	return fmt.Sprintf("%s =~ %s", expr.Lhs, expr.Rhs)
 }
+
+type MathAddExpr struct {
+	Lhs Expression
+	Rhs Expression
+}
+
+func (expr MathAddExpr) String() string {
+	return fmt.Sprintf("%s + %s", expr.Lhs, expr.Rhs)
+}
+
+type MathDelExpr struct {
+	Lhs Expression
+	Rhs Expression
+}
+
+func (expr MathDelExpr) String() string {
+	return fmt.Sprintf("%s - %s", expr.Lhs, expr.Rhs)
+}
+
+type MathDivExpr struct {
+	Lhs Expression
+	Rhs Expression
+}
+
+func (expr MathDivExpr) String() string {
+	return fmt.Sprintf("%s / %s", expr.Lhs, expr.Rhs)
+}
+
+type MathModExpr struct {
+	Lhs Expression
+	Rhs Expression
+}
+
+func (expr MathModExpr) String() string {
+	return fmt.Sprintf("%s %s %s", expr.Lhs, "%", expr.Rhs)
+}
+
+type MathNegExpr struct {
+	SubExpr Expression
+}
+
+func (expr MathNegExpr) String() string {
+	return fmt.Sprintf("-(%s)", expr.SubExpr)
+}
