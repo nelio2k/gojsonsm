@@ -662,7 +662,7 @@ func (m *FastMatcher) matchObjectOrArray(token tokenType, tokenData []byte, node
 				arrayIndex++
 			// nothing
 			default:
-				panic(fmt.Sprintf("expected object field element delimiter, received: %v", token))
+				panic(fmt.Sprintf("expected object field element delimiter, received: %v", string(token)))
 			}
 		}
 

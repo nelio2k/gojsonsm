@@ -9,6 +9,8 @@ import (
 	"strings"
 )
 
+// TODO - check exists, number arithmetic
+
 // EBNF Grammar describing the parser
 
 // FilterExpression         = ( AndCondition { "OR" AndCondition } ) { "AND" FilterExpression }

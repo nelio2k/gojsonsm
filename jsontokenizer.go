@@ -120,26 +120,7 @@ func (tkn *jsonTokenizer) Seek(pos int) {
 	tkn.pos = pos
 }
 
-func (tkn *jsonTokenizer) Step() (tokenType, []byte, error) {
-	// Bring everying local for optimization purposes
-	dataSlice := tkn.data
-	dataLen := len(dataSlice)
-	dataPos := tkn.pos
-
-	// Check that we aren't out of bounds...
-	if dataPos >= dataLen {
-		return tknEnd, nil, nil
-	}
-
-	// Keep track of where we started, so we can return the tokens data
-	startPos := dataPos
-
-	tokenType := tknUnknown
-	state := toksBeginValue
-	strHasEscapes := false
-	numberIsNonInteger := false
-
-	var c byte
+func (tkn *jsonTokenizer) DataLoop(c byte, dataSlice []byte, startPos, dataPos, dataLen int, state tokenizerState, tokenType tokenType, strHasEscapes, numberIsNonInteger bool) (tokenType, error, byte, int, int, int, tokenizerState, bool, bool) {
 DataLoop:
 	for {
 		if dataPos >= dataLen {
@@ -155,7 +136,9 @@ DataLoop:
 				break DataLoop
 			default:
 				// We couldn't have expected this... time to fail :/
-				return tknUnknown, nil, errors.New("unexpected end of input")
+				tokenType = tknUnknown
+				err := errors.New("unexpected end of input")
+				return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 			}
 		}
 
@@ -223,7 +206,9 @@ DataLoop:
 					continue DataLoop
 				}
 
-				return tknUnknown, nil, fmt.Errorf("looking for beginning of value but found `%c`", c)
+				tokenType = tknUnknown
+				err := fmt.Errorf("looking for beginning of value but found `%c`", c)
+				return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 			}
 
 		case toksBeginStringOrEmpty:
@@ -246,7 +231,9 @@ DataLoop:
 				state = toksInString
 				continue DataLoop
 			}
-			return tknUnknown, nil, errors.New("looking for beginning of object key string")
+			tokenType = tknUnknown
+			err := errors.New("looking for beginning of object key string")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksInString:
 			if c == '"' {
@@ -258,7 +245,10 @@ DataLoop:
 				continue DataLoop
 			}
 			if c < 0x20 {
-				return tknUnknown, nil, errors.New("in string literal")
+
+				tokenType = tknUnknown
+				err := errors.New("in string literal")
+				return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 			}
 
 			// continue with current state
@@ -275,7 +265,9 @@ DataLoop:
 				state = toksInStringEscU
 				continue DataLoop
 			default:
-				return tknUnknown, nil, errors.New("in string escape code")
+				tokenType = tknUnknown
+				err := errors.New("in string escape code")
+				return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 			}
 
 		case toksInStringEscU:
@@ -284,7 +276,9 @@ DataLoop:
 				continue DataLoop
 			}
 			// numbers
-			return tknUnknown, nil, errors.New("in \\u hexadecimal character escape")
+			tokenType = tknUnknown
+			err := errors.New("in \\u hexadecimal character escape")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksInStringEscU1:
 			if '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F' {
@@ -292,7 +286,9 @@ DataLoop:
 				continue DataLoop
 			}
 			// numbers
-			return tknUnknown, nil, errors.New("in \\u hexadecimal character escape")
+			tokenType = tknUnknown
+			err := errors.New("in \\u hexadecimal character escape")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksInStringEscU12:
 			if '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F' {
@@ -300,7 +296,8 @@ DataLoop:
 				continue DataLoop
 			}
 			// numbers
-			return tknUnknown, nil, errors.New("in \\u hexadecimal character escape")
+			err := errors.New("in \\u hexadecimal character escape")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksInStringEscU123:
 			if '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F' {
@@ -308,7 +305,8 @@ DataLoop:
 				continue DataLoop
 			}
 			// numbers
-			return tknUnknown, nil, errors.New("in \\u hexadecimal character escape")
+			err := errors.New("in \\u hexadecimal character escape")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksNeg:
 			if c == '0' {
@@ -319,7 +317,8 @@ DataLoop:
 				state = toks1
 				continue DataLoop
 			}
-			return tknUnknown, nil, errors.New("in numeric literal")
+			err := errors.New("in numeric literal")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toks1:
 			if '0' <= c && c <= '9' {
@@ -349,7 +348,9 @@ DataLoop:
 				state = toksDot0
 				continue DataLoop
 			}
-			return tknUnknown, nil, errors.New("after decimal point in numeric literal")
+			tokenType = tknUnknown
+			err := errors.New("after decimal point in numeric literal")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksDot0:
 			if '0' <= c && c <= '9' {
@@ -380,7 +381,9 @@ DataLoop:
 				state = toksE0
 				continue DataLoop
 			}
-			return tknUnknown, nil, errors.New("in exponent of numeric literal")
+			tokenType = tknUnknown
+			err := errors.New("in exponent of numeric literal")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksE0:
 			if '0' <= c && c <= '9' {
@@ -398,72 +401,124 @@ DataLoop:
 				state = toksTr
 				continue DataLoop
 			}
-			return tknUnknown, nil, errors.New("in literal true (expecting 'r')")
+			tokenType = tknUnknown
+			err := errors.New("in literal true (expecting 'r')")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksTr:
 			if c == 'u' {
 				state = toksTru
 				continue DataLoop
 			}
-			return tknUnknown, nil, errors.New("in literal true (expecting 'u')")
+			tokenType = tknUnknown
+			err := errors.New("in literal true (expecting 'u')")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksTru:
 			if c == 'e' {
 				tokenType = tknTrue
 				break DataLoop
 			}
-			return tknUnknown, nil, errors.New("in literal true (expecting 'e')")
+			tokenType = tknUnknown
+			err := errors.New("in literal true (expecting 'e')")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksF:
 			if c == 'a' {
 				state = toksFa
 				continue DataLoop
 			}
-			return tknUnknown, nil, errors.New("in literal false (expecting 'a')")
+			tokenType = tknUnknown
+			err := errors.New("in literal false (expecting 'a')")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksFa:
 			if c == 'l' {
 				state = toksFal
 				continue DataLoop
 			}
-			return tknUnknown, nil, errors.New("in literal false (expecting 'l')")
+			tokenType = tknUnknown
+			err := errors.New("in literal false (expecting 'l')")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksFal:
 			if c == 's' {
 				state = toksFals
 				continue DataLoop
 			}
-			return tknUnknown, nil, errors.New("in literal false (expecting 's')")
+			tokenType = tknUnknown
+			err := errors.New("in literal false (expecting 's')")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksFals:
 			if c == 'e' {
 				tokenType = tknFalse
 				break DataLoop
 			}
-			return tknUnknown, nil, errors.New("in literal false (expecting 'e')")
+			tokenType = tknUnknown
+			err := errors.New("in literal false (expecting 'e')")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksN:
 			if c == 'u' {
 				state = toksNu
 				continue DataLoop
 			}
-			return tknUnknown, nil, errors.New("in literal null (expecting 'u')")
+			tokenType = tknUnknown
+			err := errors.New("in literal null (expecting 'u')")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksNu:
 			if c == 'l' {
 				state = toksNul
 				continue DataLoop
 			}
-			return tknUnknown, nil, errors.New("in literal null (expecting 'l')")
+			tokenType = tknUnknown
+			err := errors.New("in literal null (expecting 'l')")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 
 		case toksNul:
 			if c == 'l' {
 				tokenType = tknNull
 				break DataLoop
 			}
-			return tknUnknown, nil, errors.New("in literal null (expecting 'l')")
-
+			tokenType = tknUnknown
+			err := errors.New("in literal null (expecting 'l')")
+			return tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
 		}
+	}
+	return tokenType, nil, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger
+}
+
+func sliceData(data []byte, beg, end int) []byte {
+	return data[beg:end]
+}
+
+func (tkn *jsonTokenizer) Step() (tokenType, []byte, error) {
+	// Bring everying local for optimization purposes
+	dataSlice := tkn.data
+	dataLen := len(dataSlice)
+	dataPos := tkn.pos
+
+	// Check that we aren't out of bounds...
+	if dataPos >= dataLen {
+		return tknEnd, nil, nil
+	}
+
+	// Keep track of where we started, so we can return the tokens data
+	startPos := dataPos
+
+	tokenType := tknUnknown
+	state := toksBeginValue
+	strHasEscapes := false
+	numberIsNonInteger := false
+
+	var c byte
+	var err error
+
+	tokenType, err, c, startPos, dataPos, dataLen, state, strHasEscapes, numberIsNonInteger = tkn.DataLoop(c, dataSlice, startPos, dataPos, dataLen, state, tokenType, strHasEscapes, numberIsNonInteger)
+	if err != nil {
+		return tokenType, nil, err
 	}
 
 	// Enhance some of the tokens with additional information
@@ -475,7 +530,7 @@ DataLoop:
 	}
 
 	endPos := dataPos
-	tokenData := tkn.data[startPos:endPos]
+	tokenData := sliceData(tkn.data, startPos, endPos)
 
 	// Update the scanners state
 	tkn.pos = dataPos

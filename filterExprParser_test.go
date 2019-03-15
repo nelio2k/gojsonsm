@@ -553,6 +553,8 @@ func TestFilterExpressionParser(t *testing.T) {
 	// Negative
 	_, _, err = NewFilterExpressionParser("fieldpath.`path = fieldPath2")
 	assert.NotNil(err)
+	_, _, err = NewFilterExpressionParser("string-empty IS NOT MISSING")
+	assert.NotNil(err)
 
 	fe = &FilterExpression{}
 	err = parser.ParseString("(TRUE) OR FALSE)", fe)
