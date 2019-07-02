@@ -81,11 +81,9 @@ func (val FastVal) String() string {
 	case FalseValue:
 		return "false"
 	case ArrayValue:
-		// TODO: Implement array value stringification
-		return "??ARRAY??"
+		return "(array)" + string(val.sliceData)
 	case ObjectValue:
-		// TODO: Implement array value stringification
-		return "??OBJECT??"
+		return "(object)" + string(val.sliceData)
 	case TimeValue:
 		return val.GetTime().String()
 	case RegexValue:
@@ -302,9 +300,26 @@ func (val FastVal) ToJsonString() (FastVal, error) {
 	return val, errors.New("invalid type coercion")
 }
 
+func (val FastVal) floatToIntOverflows() bool {
+	floatVal := val.GetFloat()
+
+	// Instead of using math constants that could potentially lead to rounding errors,
+	// force a float-to-float comparison here
+	if !(floatVal >= math.MinInt64 && floatVal <= math.MaxInt64) {
+		return true
+	} else {
+		return false
+	}
+}
+
 func (val FastVal) compareInt(other FastVal) int {
+	if other.dataType == FloatValue && other.floatToIntOverflows() {
+		return val.compareFloat(other)
+	}
+
 	intVal := val.AsInt()
 	intOval := other.AsInt()
+
 	if intVal < intOval {
 		return -1
 	} else if intVal > intOval {
@@ -366,10 +381,58 @@ func (val FastVal) compareTime(other FastVal) int {
 	thisTime := val.AsTime()
 	otherTime := other.AsTime()
 
+	// Consider nil value as the smaller/earlier than non-nil values
+	if thisTime == nil && otherTime == nil {
+		return 0
+	} else if otherTime == nil && thisTime != nil {
+		return 1
+	} else if otherTime != nil && thisTime == nil {
+		return -1
+	}
+
 	if thisTime.Equal(*otherTime) {
 		return 0
 	} else if thisTime.After(*otherTime) {
 		return 1
+	} else {
+		return -1
+	}
+}
+
+func (val FastVal) compareArray(other FastVal) int {
+	// TODO - need a better way but for now treat them the same
+	return val.compareObjArrData(other)
+}
+
+func (val FastVal) compareObject(other FastVal) int {
+	// TODO - need a better way but for now treat them the same
+	return val.compareObjArrData(other)
+}
+
+func (val FastVal) compareObjArrData(other FastVal) int {
+	var same bool
+	// Do not use reflect
+	switch val.dataType {
+	case ArrayValue:
+		fallthrough
+	case ObjectValue:
+		if len(val.sliceData) > len(other.sliceData) {
+			return 1
+		} else if len(val.sliceData) < len(other.sliceData) {
+			return -1
+		} else {
+			same = true
+			for i := range val.sliceData {
+				if val.sliceData[i] > other.sliceData[i] {
+					return 1
+				} else if val.sliceData[i] < other.sliceData[i] {
+					return -1
+				}
+			}
+		}
+	}
+	if same {
+		return 0
 	} else {
 		return -1
 	}
@@ -401,6 +464,10 @@ func (val FastVal) Compare(other FastVal) int {
 		return val.compareBoolean(other)
 	case TimeValue:
 		return val.compareTime(other)
+	case ArrayValue:
+		return val.compareArray(other)
+	case ObjectValue:
+		return val.compareObject(other)
 	}
 
 	if val.dataType < other.dataType {
@@ -605,6 +672,22 @@ func NewTimeFastVal(value *time.Time) FastVal {
 	val := FastVal{
 		dataType: TimeValue,
 		data:     value,
+	}
+	return val
+}
+
+func NewObjectFastVal(value []byte) FastVal {
+	val := FastVal{
+		dataType:  ObjectValue,
+		sliceData: value,
+	}
+	return val
+}
+
+func NewArrayFastVal(value []byte) FastVal {
+	val := FastVal{
+		dataType:  ArrayValue,
+		sliceData: value,
 	}
 	return val
 }

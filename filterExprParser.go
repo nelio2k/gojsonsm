@@ -11,19 +11,20 @@ import (
 
 // EBNF Grammar describing the parser
 
-// FilterExpression         = ( AndCondition { "OR" AndCondition } ) { "AND" FilterExpression }
-// AndCondition             = { OpenParens } Condition { "AND" Condition } { CloseParen }
+// FilterExpression         = ( "(" FilterExpression ")" { "AND" FilterExpression } { "OR" FilterExpression } ) | InnerExpression { "AND" FilterExpression }
+// InnerExpression          =  AndCondition { "OR" AndCondition }
+// AndCondition             =  Condition { "AND" Condition }
 // Condition                = ( [ "NOT" ] Condition ) | Operand
 // Operand                  = BooleanExpr | ( LHS ( CheckOp | ( CompareOp RHS) ) )
 // BooleanExpr              = Boolean | BooleanFuncExpr
 // LHS                      = ConstFuncExpr | Boolean | Field | Value
 // RHS                      = ConstFuncExpr | Boolean | Value | Field
-// CompareOp                = "=" | "<>" | ">" | ">=" | "<" | "<="
+// CompareOp                = "=" | "==" | "<>" | "!=" | ">" | ">=" | "<" | "<="
 // CheckOp                  = ( "IS" [ "NOT" ] ( NULL | MISSING ) )
 // Field                    = { @"-" } OnePath { "." OnePath } { MathOp MathValue }
 // OnePath                  = ( PathFuncExpression | StringType ){ ArrayIndex }
-// StringType               = @String | @Ident | @RawString | @Char
-// ArrayIndex               = "[" [ @"-" ] @Int "]"
+// StringType               = @Ident | @RawString | @Char
+// ArrayIndex               = "[" @Int "]"
 // Value                    = @String
 // ConstFuncExpr            = ConstFuncNoArg | ConstFuncOneArg | ConstFuncTwoArgs
 // ConstFuncNoArg           = ConstFuncNoArgName "(" ")"
@@ -39,45 +40,148 @@ import (
 // MathOp                   = @"+" | @"-" | @"*" | @"/" | @"%"
 // MathValue                = @Int | @Float
 // OnePathFuncNoArgName     = "META"
-// BooleanFuncExpr          = BooleanFuncTwoArgs | ExistClause
+// BooleanFuncExpr          = BooleanFuncTwoArgs | ExistsClause
 // BooleanFuncTwoArgs       = BooleanFuncTwoArgsName "(" ConstFuncArgument "," ConstFuncArgumentRHS ")"
 // BooleanFuncTwoArgsName   = "REGEXP_CONTAINS"
-// ExistClause              = ( "EXISTS" "(" Field ")" )
+// ExistsClause              = ( "EXISTS" "(" Field ")" )
 
 type FilterExpression struct {
-	AndConditions []*FEAndCondition   `( @@ { "OR" @@ } )`
-	SubFilterExpr []*FilterExpression `{ "AND" @@ }`
+	OpenParen              *FEOpenParen       `( @@ `
+	SubFilterExpr          *FilterExpression  `@@`
+	CloseParen             *FECloseParen      ` @@`
+	AndContinuation        *FilterExpression  `{ "AND" @@ }`
+	OrContinuation         *FilterExpression  `{ "OR" @@ }) |`
+	FilterExpr             *FEInnerExpression `@@`
+	FilterExprContinuation *FilterExpression  `{ "AND" @@ }`
+}
+
+func (f *FilterExpression) String() string {
+	var output []string
+	if f.FilterExpr != nil {
+		output = append(output, f.FilterExpr.String())
+		if f.FilterExprContinuation != nil {
+			output = append(output, OperatorAnd)
+			output = append(output, f.FilterExprContinuation.String())
+		}
+	} else {
+		if f.OpenParen != nil {
+			output = append(output, f.OpenParen.String())
+		}
+		if f.SubFilterExpr != nil {
+			output = append(output, f.SubFilterExpr.String())
+		}
+		if f.CloseParen != nil {
+			output = append(output, f.CloseParen.String())
+		}
+		if f.AndContinuation != nil {
+			output = append(output, OperatorAnd)
+			output = append(output, f.AndContinuation.String())
+		} else if f.OrContinuation != nil {
+			output = append(output, OperatorOr)
+			output = append(output, f.OrContinuation.String())
+		}
+
+	}
+	if len(output) == 0 {
+		return "?? (FilterExpression)"
+	} else {
+		return strings.Join(output, " ")
+	}
+
+}
+
+func (f *FilterExpression) outputExpressionNoParenCheck() (Expression, error) {
+	if f.FilterExpr != nil {
+		if f.FilterExprContinuation != nil {
+			continuation, err := f.FilterExprContinuation.OutputExpression()
+			if err != nil {
+				return nil, err
+			}
+			filterExpr, err := f.FilterExpr.OutputExpression()
+			if err != nil {
+				return nil, err
+			}
+			var outExpr AndExpr
+			outExpr = append(outExpr, filterExpr)
+			outExpr = append(outExpr, continuation)
+			return outExpr, nil
+		} else {
+			return f.FilterExpr.OutputExpression()
+		}
+	} else if f.SubFilterExpr != nil {
+		subExprOut, err := f.SubFilterExpr.OutputExpression()
+		if err != nil {
+			return nil, err
+		}
+		if f.AndContinuation != nil {
+			var outExpr AndExpr
+			outExpr = append(outExpr, subExprOut)
+			andContinuation, err := f.AndContinuation.OutputExpression()
+			if err != nil {
+				return nil, err
+			}
+			outExpr = append(outExpr, andContinuation)
+			return outExpr, nil
+		} else if f.OrContinuation != nil {
+			var outExpr OrExpr
+			outExpr = append(outExpr, subExprOut)
+			orContinuation, err := f.OrContinuation.OutputExpression()
+			if err != nil {
+				return nil, err
+			}
+			outExpr = append(outExpr, orContinuation)
+			return outExpr, nil
+		} else {
+			return subExprOut, err
+		}
+	} else {
+		return nil, fmt.Errorf("Invalid FilterExpression %v", f.String())
+	}
+}
+
+func (f *FilterExpression) OutputExpression() (Expression, error) {
+	openParens := f.GetTotalOpenParens()
+	closeParens := f.GetTotalCloseParens()
+	if openParens != closeParens {
+		return nil, fmt.Errorf("%s: found %v open parentheses and %v close parentheses", ErrorMalformedParenthesis, openParens, closeParens)
+	}
+
+	return f.outputExpressionNoParenCheck()
 }
 
 func (f *FilterExpression) GetTotalOpenParens() (count int) {
-	if len(f.AndConditions) > 0 {
-		for _, ac := range f.AndConditions {
-			count += ac.GetTotalOpenParens()
-		}
+	if f.OpenParen != nil {
+		count++
 	}
-	if len(f.SubFilterExpr) > 0 {
-		for _, se := range f.SubFilterExpr {
-			count += se.GetTotalOpenParens()
+	if f.SubFilterExpr != nil {
+		count += f.SubFilterExpr.GetTotalOpenParens()
+	} else if f.FilterExpr != nil {
+		if f.FilterExprContinuation != nil {
+			count += f.FilterExprContinuation.GetTotalOpenParens()
 		}
 	}
 	return
 }
 
 func (f *FilterExpression) GetTotalCloseParens() (count int) {
-	if len(f.AndConditions) > 0 {
-		for _, ac := range f.AndConditions {
-			count += ac.GetTotalCloseParens()
-		}
+	if f.CloseParen != nil {
+		count++
 	}
-	if len(f.SubFilterExpr) > 0 {
-		for _, se := range f.SubFilterExpr {
-			count += se.GetTotalCloseParens()
+	if f.SubFilterExpr != nil {
+		count += f.SubFilterExpr.GetTotalCloseParens()
+	} else if f.FilterExpr != nil {
+		if f.FilterExprContinuation != nil {
+			count += f.FilterExprContinuation.GetTotalCloseParens()
 		}
 	}
 	return
 }
 
-func (fe *FilterExpression) String() string {
+type FEInnerExpression struct {
+	AndConditions []*FEAndCondition `( @@ { "OR" @@ } )`
+}
+
+func (fe *FEInnerExpression) String() string {
 	output := []string{}
 
 	first := true
@@ -90,50 +194,21 @@ func (fe *FilterExpression) String() string {
 		output = append(output, expr.String())
 	}
 
-	for _, expr := range fe.SubFilterExpr {
-		if first {
-			first = false
-		} else {
-			output = append(output, OperatorAnd)
-		}
-		output = append(output, expr.String())
-	}
-
 	return strings.Join(output, " ")
 }
 
-// Outputs the head of the Expression match tree of which represents everything underneath
-func (f *FilterExpression) OutputExpression() (Expression, error) {
+func (f *FEInnerExpression) OutputExpression() (Expression, error) {
 	var outExpr OrExpr
-
-	if f.GetTotalOpenParens() != f.GetTotalCloseParens() {
-		return outExpr, ErrorMalformedParenthesis
-	}
 
 	for _, oneExpr := range f.AndConditions {
 		andExpr, err := oneExpr.OutputExpression()
 		if err != nil {
-			return outExpr, err
+			return nil, err
 		}
 		outExpr = append(outExpr, andExpr)
 	}
 
-	if len(f.SubFilterExpr) > 0 {
-		var combinedExpr AndExpr
-		combinedExpr = append(combinedExpr, outExpr)
-
-		for _, subFilterExpr := range f.SubFilterExpr {
-			subExpr, err := subFilterExpr.OutputExpression()
-			if err != nil {
-				return combinedExpr, err
-			}
-			combinedExpr = append(combinedExpr, subExpr)
-		}
-
-		return combinedExpr, nil
-	} else {
-		return outExpr, nil
-	}
+	return outExpr, nil
 }
 
 type FEOpenParen struct {
@@ -153,37 +228,11 @@ func (fecp *FECloseParen) String() string {
 }
 
 type FEAndCondition struct {
-	OpenParens   []*FEOpenParen  `{ @@ }`
-	OrConditions []*FECondition  `@@ { "AND" @@ }`
-	CloseParens  []*FECloseParen `{ @@ }`
-}
-
-func (f *FEAndCondition) GetTotalOpenParens() (count int) {
-	count += len(f.OpenParens)
-	if len(f.OrConditions) > 0 {
-		for _, cond := range f.OrConditions {
-			count += cond.GetTotalOpenParens()
-		}
-	}
-	return
-}
-
-func (f *FEAndCondition) GetTotalCloseParens() (count int) {
-	count += len(f.CloseParens)
-	if len(f.OrConditions) > 0 {
-		for _, cond := range f.OrConditions {
-			count += cond.GetTotalCloseParens()
-		}
-	}
-	return
+	OrConditions []*FECondition `@@ { "AND" @@ }`
 }
 
 func (ac *FEAndCondition) String() string {
 	output := []string{}
-
-	for _, e := range ac.OpenParens {
-		output = append(output, e.String())
-	}
 
 	first := true
 	for _, e := range ac.OrConditions {
@@ -192,10 +241,6 @@ func (ac *FEAndCondition) String() string {
 		} else {
 			output = append(output, OperatorAnd)
 		}
-		output = append(output, e.String())
-	}
-
-	for _, e := range ac.CloseParens {
 		output = append(output, e.String())
 	}
 
@@ -217,22 +262,6 @@ func (f *FEAndCondition) OutputExpression() (Expression, error) {
 type FECondition struct {
 	Not     *FECondition `"NOT" @@`
 	Operand *FEOperand   `| @@`
-}
-
-func (f *FECondition) GetTotalOpenParens() (count int) {
-	if f.Not != nil {
-		count += f.Not.GetTotalOpenParens()
-	}
-	// Operand has no open or close parens
-	return
-}
-
-func (f *FECondition) GetTotalCloseParens() (count int) {
-	if f.Not != nil {
-		count += f.Not.GetTotalCloseParens()
-	}
-	// Operand has no open or close parens
-	return
 }
 
 func (fec *FECondition) String() string {
@@ -489,10 +518,6 @@ func (fef *FEField) String() string {
 func (f *FEField) OutputExpression() (Expression, error) {
 	var outExpr FieldExpr
 
-	if f.ShouldHandleSpecialValue() {
-		return f.OutputExpressionSpecialAsValue()
-	}
-
 	for _, onePath := range f.Path {
 		pathName, arrays, err := onePath.OutputOnePath()
 		if err != nil {
@@ -538,33 +563,14 @@ func (f *FEField) OutputExpression() (Expression, error) {
 	}
 }
 
-// The problem with this parser is that if FEField is prioritized higher than FEValue, then
-// it's possible that a valid FEValue gets captured by FEField as it will soak up any valid @String
-// or @Ident. Thus any date constant values will be put in the same category as @String and gets captured.
-// This is a hack that should get around it until there's a better way to do this
-// Normally, this isn't a problem because there is FERhs vs FELhs, of which FERhs will prioritize value
-// over field. In the DATE() function, however, it doesn't have this luxury to prioritize value or field
-// since it only has one variable.
-func (f *FEField) ShouldHandleSpecialValue() bool {
-	if len(f.Path) == 1 {
-		if iso8601Year.MatchString(f.Path[0].String()) ||
-			iso8601YearAndMonth.MatchString(f.Path[0].String()) ||
-			iso8601CompleteDate.MatchString(f.Path[0].String()) {
-			return true
-		}
-	}
-	return false
-}
-
 func (f *FEField) OutputExpressionSpecialAsValue() (Expression, error) {
 	return ValueExpr{f.Path[0].String()}, nil
 }
 
 type FEStringType struct {
-	EscapedStrVal string `( @String  |`
-	CharVal       string `@Char |`
-	RawStr        string `@RawString |`
-	StrValue      string `@Ident )`
+	CharVal  string `( @Char |`
+	RawStr   string `@RawString |`
+	StrValue string `@Ident )`
 }
 
 func (f *FEStringType) String() string {
@@ -574,8 +580,6 @@ func (f *FEStringType) String() string {
 		return f.RawStr
 	} else if len(f.StrValue) > 0 {
 		return f.StrValue
-	} else if len(f.EscapedStrVal) > 0 {
-		return f.EscapedStrVal
 	} else {
 		return ""
 	}
@@ -776,9 +780,23 @@ func (f *FEValue) OutputExpression() (Expression, error) {
 // and go to the other type of operands
 
 type FEOpChar struct {
-	Equal       *bool `( @"=" |`
+	Not         *bool `( @"!" |`
+	Equal       *bool `@"=" |`
 	LessThan    *bool `@"<" |`
 	GreaterThan *bool `@">" )`
+}
+
+func (f *FEOpChar) String() string {
+	if f.Not != nil {
+		return "!"
+	} else if f.Equal != nil {
+		return "="
+	} else if f.LessThan != nil {
+		return "<"
+	} else if f.GreaterThan != nil {
+		return ">"
+	}
+	return ""
 }
 
 type FECompareOp struct {
@@ -788,12 +806,18 @@ type FECompareOp struct {
 
 func (feo *FECompareOp) IsEqual() bool {
 	// =
-	return feo.OpChars0 != nil && feo.OpChars0.Equal != nil && feo.OpChars1 == nil
+	singleEq := feo.OpChars0 != nil && feo.OpChars0.Equal != nil && feo.OpChars1 == nil
+	// ==
+	doubleEq := feo.OpChars0 != nil && feo.OpChars0.Equal != nil && feo.OpChars1 != nil && feo.OpChars1.Equal != nil
+	return singleEq || doubleEq
 }
 
 func (feo *FECompareOp) IsNotEqual() bool {
+	// !=
+	notEqual0 := feo.OpChars0 != nil && feo.OpChars0.Not != nil && feo.OpChars1 != nil && feo.OpChars1.Equal != nil
 	// <>
-	return feo.OpChars0 != nil && feo.OpChars0.LessThan != nil && feo.OpChars1 != nil && feo.OpChars1.GreaterThan != nil
+	notEqual1 := feo.OpChars0 != nil && feo.OpChars0.LessThan != nil && feo.OpChars1 != nil && feo.OpChars1.GreaterThan != nil
+	return notEqual0 || notEqual1
 }
 
 func (feo *FECompareOp) IsGreaterThan() bool {
@@ -830,7 +854,18 @@ func (feo *FECompareOp) String() string {
 	} else if feo.IsLessThanOrEqualTo() {
 		return OperatorLessThanEq
 	}
-	return "?? (FECompareOp)"
+	var invalidOp []string
+	if feo.OpChars0 != nil {
+		invalidOp = append(invalidOp, feo.OpChars0.String())
+	}
+	if feo.OpChars1 != nil {
+		invalidOp = append(invalidOp, feo.OpChars1.String())
+	}
+	if len(invalidOp) > 0 {
+		return strings.Join(invalidOp, "")
+	} else {
+		return "?? (FECompareOp)"
+	}
 }
 
 func (f *FECompareOp) OutputExpression(lhs Expression, rhs Expression) (Expression, error) {
@@ -887,7 +922,7 @@ func (feco *FECheckOp) isMissingInternal() bool {
 }
 
 func (feco *FECheckOp) IsNotMissing() bool {
-	return feco.isNot() && feco.IsMissing()
+	return feco.isNot() && feco.isMissingInternal()
 }
 
 func (feco *FECheckOp) IsNull() bool {
@@ -1108,7 +1143,14 @@ func (f *FEConstFuncOneArg) OutputExpression() (Expression, error) {
 		return outExpr, err
 	}
 	outExpr.Params = append(outExpr.Params, arg)
-	return outExpr, nil
+
+	// Special handling for DATE function - check to make sure user entered the correct date format
+	// if they used a value instead of a field
+	if f.ConstFuncOneArgName.Date != nil && f.Argument != nil && f.Argument.Argument != nil && !validTimeChecker(f.Argument.String()) {
+		err = fmt.Errorf("Invalid DATE format specified: %v", f.Argument.String())
+	}
+
+	return outExpr, err
 }
 
 type FEConstFuncOneArgName struct {
@@ -1274,14 +1316,14 @@ func (arg *FEConstFuncTwoArgsName) OutputExpression() (string, error) {
 
 type FEBooleanFuncExpr struct {
 	BooleanFuncTwoArgs *FEBooleanFuncTwoArgs `@@ |`
-	ExistClause        *FEExistClause        `@@`
+	ExistsClause       *FEExistsClause       `@@`
 }
 
 func (f *FEBooleanFuncExpr) String() string {
 	if f.BooleanFuncTwoArgs != nil {
 		return f.BooleanFuncTwoArgs.String()
-	} else if f.ExistClause != nil {
-		return f.ExistClause.String()
+	} else if f.ExistsClause != nil {
+		return f.ExistsClause.String()
 	} else {
 		return "?? (FEBooleanFuncExpr)"
 	}
@@ -1290,8 +1332,8 @@ func (f *FEBooleanFuncExpr) String() string {
 func (f *FEBooleanFuncExpr) OutputExpression() (Expression, error) {
 	if f.BooleanFuncTwoArgs != nil {
 		return f.BooleanFuncTwoArgs.OutputExpression()
-	} else if f.ExistClause != nil {
-		return f.ExistClause.OutputExpression()
+	} else if f.ExistsClause != nil {
+		return f.ExistsClause.OutputExpression()
 	}
 	return nil, fmt.Errorf("Invalid FEBooleanFuncExpr")
 }
@@ -1357,19 +1399,19 @@ func (n *FEBooleanFuncTwoArgsName) OutputExpression() (Expression, error) {
 	}
 }
 
-type FEExistClause struct {
+type FEExistsClause struct {
 	Field *FEField `( "EXISTS" "(" @@ ")" )`
 }
 
-func (f *FEExistClause) String() string {
+func (f *FEExistsClause) String() string {
 	if f.Field != nil {
 		return fmt.Sprintf("%v ( %v )", OperatorExists, f.Field.String())
 	} else {
-		return "?? (FEExistClause)"
+		return "?? (FEExistsClause)"
 	}
 }
 
-func (f *FEExistClause) OutputExpression() (Expression, error) {
+func (f *FEExistsClause) OutputExpression() (Expression, error) {
 	if f.Field != nil {
 		fieldExpr, err := f.Field.OutputExpression()
 		if err != nil {
@@ -1380,7 +1422,7 @@ func (f *FEExistClause) OutputExpression() (Expression, error) {
 		}, nil
 	}
 
-	return nil, fmt.Errorf("Invalid FEExistClause %v", f.String())
+	return nil, fmt.Errorf("Invalid FEExistsClause %v", f.String())
 }
 
 func parserWrapper(parser *participle.Parser, expression string, fe *FilterExpression, err *error) {
